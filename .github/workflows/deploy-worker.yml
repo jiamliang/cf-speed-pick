@@ -83,12 +83,14 @@ jobs:
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
         run: |
           # 只在 cf-worker 部署时设置 VLESS_UUID
+          # 注意：secret 未设置时只是警告，不阻塞部署。
+          # UUID 可以之后在 CF Dashboard → Workers → cf-speed-proxy → Settings → Variables 里手动配。
           if [ "${{ needs.detect.outputs.worker_dir }}" = "cf-worker" ]; then
             if [ -z "$VLESS_UUID" ]; then
-              echo "::error::VLESS_UUID secret is not set. Add it to repo Settings → Secrets."
-              exit 1
+              echo "::warning::VLESS_UUID secret is empty or not set. The Worker will deploy but may not function until you set the UUID via `wrangler secret put VLESS_UUID` or in the CF Dashboard."
+            else
+              echo "$VLESS_UUID" | npx wrangler secret put VLESS_UUID
             fi
-            echo "$VLESS_UUID" | npx wrangler secret put VLESS_UUID
           fi
           # 将来 docker-proxy-worker 加自己的 secret 在这里扩展
 
