@@ -81,13 +81,15 @@ jobs:
         working-directory: ${{ needs.detect.outputs.worker_dir }}
         env:
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           # 只在 cf-worker 部署时设置 VLESS_UUID
           # 注意：secret 未设置时只是警告，不阻塞部署。
           # UUID 可以之后在 CF Dashboard → Workers → cf-speed-proxy → Settings → Variables 里手动配。
           if [ "${{ needs.detect.outputs.worker_dir }}" = "cf-worker" ]; then
             if [ -z "$VLESS_UUID" ]; then
-              echo "::warning::VLESS_UUID secret is empty or not set. The Worker will deploy but may not function until you set the UUID via `wrangler secret put VLESS_UUID` or in the CF Dashboard."
+              echo "::warning::VLESS_UUID secret is empty or not set. The Worker will deploy but may not function until you set the UUID via \`wrangler secret put VLESS_UUID\` or in the CF Dashboard."
             else
               echo "$VLESS_UUID" | npx wrangler secret put VLESS_UUID
             fi
