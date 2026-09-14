@@ -1,0 +1,100 @@
+# GitHub Actions: 部署 Cloudflare Workers
+#
+# 工作目录通过 workflow_dispatch 的 inputs.worker_dir 切换。
+# push 触发时按变更路径自动选择 worker_dir:
+#   - cf-worker/** → cf-worker
+#   - docker-proxy-worker/** → docker-proxy-worker
+#   - 其他 worker 目录加进下面的判断
+#
+# 前置 Secrets (仓库 Settings → Secrets and variables → Actions):
+#   - CLOUDFLARE_API_TOKEN  (CF Dashboard 创建的 Token, "Edit Cloudflare Workers" 模板)
+#   - CLOUDFLARE_ACCOUNT_ID (CF Dashboard 首页右下角)
+#   - VLESS_UUID            (cf-worker 用的 UUID, e.g. uuidgen | tr 'A-Z' 'a-z')
+
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cf-worker/**'
+      - 'docker-proxy-worker/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+    inputs:
+      worker_dir:
+        description: 'Worker 目录路径 (相对仓库根)'
+        required: true
+        default: 'cf-worker'
+        type: choice
+        options:
+          - cf-worker
+          - docker-proxy-worker
+
+jobs:
+  detect:
+    name: Detect changed worker dir
+    runs-on: ubuntu-latest
+    outputs:
+      worker_dir: ${{ steps.detect.outputs.worker_dir }}
+    steps:
+      - id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "worker_dir=${{ inputs.worker_dir }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # Check which worker dirs were changed in this push
+            for d in cf-worker docker-proxy-worker; do
+              if echo "${{ github.event.head_commit.modified }} ${{ github.event.head_commit.added }}" \
+                 | grep -q "^${d}/"; then
+                echo "worker_dir=$d" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+            # Default to cf-worker if no specific match
+            echo "worker_dir=cf-worker" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy ${{ needs.detect.outputs.worker_dir }}
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ needs.detect.outputs.worker_dir }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ needs.detect.outputs.worker_dir }}
+        run: npm ci
+
+      - name: Set per-worker secrets
+        working-directory: ${{ needs.detect.outputs.worker_dir }}
+        env:
+          VLESS_UUID: ${{ secrets.VLESS_UUID }}
+        run: |
+          # 只在 cf-worker 部署时设置 VLESS_UUID
+          if [ "${{ needs.detect.outputs.worker_dir }}" = "cf-worker" ]; then
+            if [ -z "$VLESS_UUID" ]; then
+              echo "::error::VLESS_UUID secret is not set. Add it to repo Settings → Secrets."
+              exit 1
+            fi
+            echo "$VLESS_UUID" | npx wrangler secret put VLESS_UUID
+          fi
+          # 将来 docker-proxy-worker 加自己的 secret 在这里扩展
+
+      - name: Deploy to Cloudflare
+        working-directory: ${{ needs.detect.outputs.worker_dir }}
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

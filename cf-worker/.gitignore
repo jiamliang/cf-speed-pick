@@ -1,0 +1,8 @@
+# Node / wrangler
+node_modules/
+.wrangler/
+.dev.vars
+
+# Wrangler-generated
+.wrangler-cache/
+.mf/

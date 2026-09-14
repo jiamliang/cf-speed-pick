@@ -1,0 +1,16 @@
+{
+  "name": "cf-speed-pick-worker",
+  "version": "0.1.0",
+  "description": "VLESS over WebSocket proxy Worker for cf-speed-pick",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "secret:uuid": "wrangler secret put VLESS_UUID"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}

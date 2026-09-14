@@ -1,0 +1,29 @@
+# Build artifacts
+cf-speed-pick
+cf-speed-pick-*
+cf-speed-pick.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go
+vendor/
+
+# cf-worker
+cf-worker/node_modules/
+cf-worker/.wrangler/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

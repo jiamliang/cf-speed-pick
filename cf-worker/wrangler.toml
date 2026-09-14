@@ -1,0 +1,35 @@
+# wrangler.toml — cf-speed-pick Worker config
+#
+# After editing this file:
+#   1. Set the secret UUID once:  echo "$UUID" | npx wrangler secret put VLESS_UUID
+#   2. Deploy:                    npx wrangler deploy
+#
+# UUID itself is NOT stored here — it's a Secret, set via `wrangler secret put`.
+
+name = "cf-speed-proxy"
+main = "_worker.js"
+compatibility_date = "2024-09-23"
+
+# Workers Logs — visible in CF Dashboard > Workers > Logs.
+# Disable if you don't want any observability telemetry.
+[observability]
+enabled = true
+
+# Plain vars (NOT secrets — these are visible in the dashboard).
+# Override per-environment as needed.
+[vars]
+# Optional fallback IP:port used when direct connect fails.
+# Examples: "1.2.3.4:443" (your VPS) or "" to disable (default).
+FALLBACK_IP = ""
+
+# Optional URL of the cf-speed-pick VPS cache root.
+# Example: "https://cf-cache.example.com"  (no trailing slash)
+# When set, /sub dynamically fetches colo CSVs from {UPSTREAM_CACHE_BASE}/cache/colo/{COLO}.csv
+# When empty, /sub returns a static minimal list.
+UPSTREAM_CACHE_BASE = ""
+
+# Optional custom domain routes.
+# Uncomment and edit to bind a custom domain. After editing, run `wrangler deploy` again.
+# [[routes]]
+# pattern = "proxy.example.com/*"
+# custom_domain = true
