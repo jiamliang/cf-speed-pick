@@ -29,7 +29,10 @@ FALLBACK_IP = ""
 UPSTREAM_CACHE_BASE = ""
 
 # Optional custom domain routes.
-# Uncomment and edit to bind a custom domain. After editing, run `wrangler deploy` again.
-# [[routes]]
-# pattern = "proxy.example.com/*"
-# custom_domain = true
+# Bind vless.cf.peeweecap.com to this Worker.
+# On first deploy, wrangler will:
+#   - Create a CNAME record pointing to the .workers.dev fallback
+#   - Issue a TLS certificate automatically (Universal SSL)
+[[routes]]
+pattern = "vless.cf.peeweecap.com/*"
+custom_domain = true
