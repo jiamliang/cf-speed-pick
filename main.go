@@ -55,6 +55,7 @@ var (
 	flagInputCSV      = flag.String("input", "", "从 CSV 加载候选 IP（跳过 IP 池构造 + Layer 1）；列：ip,delay_ms,colo")
 	flagOutputColos   = flag.Bool("output-colos", false, "按 colo 分桶输出多个 CSV（VPS 端用，给路由器订阅）")
 	flagSkipHttping   = flag.Bool("skip-httping", false, "跳过 Layer 2；要求输入已有 colo 字段（如 -input 02_httping.csv）")
+	flagRanges        = flag.String("ranges", "", "CIDR 文件路径（每行一个，支持 # 注释）。空=用内置段")
 )
 
 func main() {
@@ -98,16 +99,25 @@ func run() error {
 	} else {
 		// 模式 B：标准流程，从 IP 池开始
 		fmt.Println("\n[准备] 构造 IP 池...")
+
+		// 解析 -ranges 文件（如果有）
+		v4Ranges, v6Ranges, err := loadRanges(*flagRanges)
+		if err != nil {
+			return fmt.Errorf("load ranges: %w", err)
+		}
+
 		pool, err := BuildIPPool(PoolOptions{
 			IncludeV4: true,
 			IncludeV6: *flagIncludeV6,
 			V6Sample:  *flagV6Sample,
+			V4Ranges:  v4Ranges,
+			V6Ranges:  v6Ranges,
 		})
 		if err != nil {
 			return fmt.Errorf("build IP pool: %w", err)
 		}
 		fmt.Printf("[准备] IPv4 段数=%d IPv6 段数=%d 总 IP 数=%d\n",
-			len(allV4Ranges()), len(allV6Ranges()), len(pool))
+			len(v4Ranges), len(v6Ranges), len(pool))
 
 		tcpingParams := TCPingParams{
 			Routines:  *flagTCPRoutines,
@@ -244,6 +254,7 @@ Layer 3 下载:
   -input string          从 CSV 加载候选 IP（跳过 IP 池构造 + Layer 1）
   -skip-httping          跳过 Layer 2（要求 -input 已有 colo 字段）
   -output-colos          按 colo 分桶输出多个 CSV（out/colo/NRT.csv 等）
+  -ranges string         CIDR 文件路径（每行一个，支持 # 注释）。空=用内置段
 
 其他:
   -version               打印版本

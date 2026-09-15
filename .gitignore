@@ -33,3 +33,8 @@ scripts/env
 .env
 .env.local
 
+# Binaries in deploy/ (build from source via `go build`)
+deploy/cf-speed-pick-linux-amd64
+deploy/cf-speed-pick-linux-arm64
+
+

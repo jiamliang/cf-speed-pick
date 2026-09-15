@@ -31,9 +31,11 @@ const defaultIPv6Sample = 1000
 
 // PoolOptions 控制 IP 池构造。
 type PoolOptions struct {
-	IncludeV4 bool // 是否包含 IPv4（默认 true）
-	IncludeV6 bool // 是否包含 IPv6（默认 false，需要 -ipv6）
-	V6Sample  int  // IPv6 每段采样数（默认 1000）
+	IncludeV4 bool     // 是否包含 IPv4（默认 true）
+	IncludeV6 bool     // 是否包含 IPv6（默认 false，需要 -ipv6）
+	V6Sample  int      // IPv6 每段采样数（默认 1000）
+	V4Ranges  []string // 自定义 IPv4 段（nil = 用内置）
+	V6Ranges  []string // 自定义 IPv6 段（nil = 用内置）
 }
 
 // BuildIPPool 根据 options 构造 IP 池。
@@ -59,8 +61,17 @@ func BuildIPPool(opts PoolOptions) ([]*net.IPAddr, error) {
 		}
 	}
 
+	v4Ranges := opts.V4Ranges
+	if v4Ranges == nil {
+		v4Ranges = allV4Ranges()
+	}
+	v6Ranges := opts.V6Ranges
+	if v6Ranges == nil {
+		v6Ranges = allV6Ranges()
+	}
+
 	if opts.IncludeV4 {
-		for _, cidr := range allV4Ranges() {
+		for _, cidr := range v4Ranges {
 			ips, err := expandOrSampleV4(cidr, maxExpandPerRange)
 			if err != nil {
 				return nil, fmt.Errorf("expand %s: %w", cidr, err)
@@ -72,7 +83,7 @@ func BuildIPPool(opts PoolOptions) ([]*net.IPAddr, error) {
 	}
 
 	if opts.IncludeV6 {
-		for _, cidr := range allV6Ranges() {
+		for _, cidr := range v6Ranges {
 			ips, err := sampleV6(cidr, opts.V6Sample)
 			if err != nil {
 				return nil, fmt.Errorf("sample %s: %w", cidr, err)

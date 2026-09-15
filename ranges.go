@@ -13,6 +13,13 @@
 
 package main
 
+import (
+	"fmt"
+	"net"
+	"os"
+	"strings"
+)
+
 // cfOfficialV4 CF 官方公开的 IPv4 段。
 // 来源：https://www.cloudflare.com/ips-v4 （2024-2026 期间稳定）
 var cfOfficialV4 = []string{
@@ -118,4 +125,52 @@ func allV6Ranges() []string {
 		}
 	}
 	return out
+}
+
+// loadRanges 从文件加载 CIDR 段。
+// 格式：每行一个 CIDR，支持 # 注释和空行；含 ":" 的当 IPv6。
+// path 为空 → 返回内置段。
+// 文件不存在或读失败 → 警告 + 返回内置段（不报错，保留可用性）。
+// 解析失败（非法 CIDR）→ 报错退出。
+//
+// 返回 (v4, v6, error)。
+func loadRanges(path string) ([]string, []string, error) {
+	if path == "" {
+		return allV4Ranges(), allV6Ranges(), nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: read ranges file %s failed: %v — using built-in\n", path, err)
+		return allV4Ranges(), allV6Ranges(), nil
+	}
+
+	var v4, v6 []string
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// 基本 CIDR 校验
+		if _, _, err := net.ParseCIDR(line); err != nil {
+			return nil, nil, fmt.Errorf("ranges file %s line %d: invalid CIDR %q: %w", path, i+1, line, err)
+		}
+		if strings.Contains(line, ":") {
+			v6 = append(v6, line)
+		} else {
+			v4 = append(v4, line)
+		}
+	}
+
+	// 如果用户文件全空，fallback 到内置
+	if len(v4) == 0 {
+		fmt.Fprintf(os.Stderr, "WARN: ranges file %s has no IPv4 — using built-in\n", path)
+		v4 = allV4Ranges()
+	}
+	if len(v6) == 0 {
+		v6 = allV6Ranges()
+	}
+
+	fmt.Fprintf(os.Stderr, "loaded %d IPv4 + %d IPv6 ranges from %s\n", len(v4), len(v6), path)
+	return v4, v6, nil
 }
