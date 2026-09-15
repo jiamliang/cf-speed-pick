@@ -209,14 +209,20 @@ async function handleSubscription(request, env) {
   const url = new URL(request.url);
 
   // Query params
-  let operator = (url.searchParams.get('operator') || 'unicom').toLowerCase();
+  //   默认 operator='auto'（不带参数 = 合并 unicom + telecom）
+  //   ?operator=unicom|telecom|auto|test 显式指定
+  //   ?auto=1 在 'auto' 基础上反查 client IP（识别为联通/电信则单读，否则合并）
+  let operator = (url.searchParams.get('operator') || 'auto').toLowerCase();
   const colos = (url.searchParams.get('colos') || 'NRT,ICN,KIX,TPE,HKG,SIN')
     .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
   const top = clampInt(url.searchParams.get('top'), 1, 50, 5);
   const minSpeed = parseFloat(url.searchParams.get('min_speed') || '0') || 0;
 
-  // ?auto=1 → detect from client IP via ip-api.com (cached 24h)
-  if (url.searchParams.get('auto') === '1') {
+  // ?auto=1 + operator=auto → 反查 client IP
+  // 反查结果可能是:
+  //   'unicom' / 'telecom' → 单读一个
+  //   'auto'（未知/失败）  → 保持 'auto'（合并）
+  if (url.searchParams.get('auto') === '1' && operator === 'auto') {
     operator = await detectOperator(request, env);
   }
 
