@@ -28,11 +28,10 @@ FALLBACK_IP = ""
 # When empty, /sub returns a static minimal list.
 UPSTREAM_CACHE_BASE = ""
 
-# Optional custom domain routes.
 # Bind vless.cf.peeweecap.com to this Worker.
-# On first deploy, wrangler will:
-#   - Create a CNAME record pointing to the .workers.dev fallback
-#   - Issue a TLS certificate automatically (Universal SSL)
+# When custom_domain = true, wrangler auto-creates the DNS record AND
+# issues a TLS certificate. Path is not allowed (only the bare hostname).
+# All subpaths under this domain route to the Worker.
 [[routes]]
-pattern = "vless.cf.peeweecap.com/*"
+pattern = "vless.cf.peeweecap.com"
 custom_domain = true
