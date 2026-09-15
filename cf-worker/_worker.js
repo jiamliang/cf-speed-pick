@@ -65,25 +65,27 @@ const VERSION = '0.2.0';
 // =====================================================================
 // FALLBACK_IPS — 兜底优选 IP（KV 没数据或失效时使用）
 //
-// 这些 IP 是你 VPS/R7000 上跑 cf-speed-pick 验证过的真实 IP。
+// 这些 IP 是 2026-09-15 在青岛电信机房（AS58541, CHINATELECOM SHANDONG QINGDAO IDC）
+// 跑 cf-speed-pick 验证过的真实优选 IP。
 // 每月跑一次 cf-speed-pick，挑 Top 10 更新此列表。
 //
-// TODO: 跑一次完整测速，把真实 IP 填进来
-// 命令: ./cf-speed-pick -out /tmp/fb -colo-strategy tiered -n 200 -dt 10s \
-//        -dn 20 -max-delay 150 -colo-priority "NRT,ICN,KIX,FUK" -output-colos
-//       column -t -s, /tmp/fb/03_top.csv
+// 上次测速日期: 2026-09-15
+// 数据源: /tmp/cf-test-out/02_httping.csv (1197 IPs from Layer 2)
 // =====================================================================
 const FALLBACK_IPS = [
-  // === 日本/韩国 colo 占大头（国内延迟低）===
-  // 示例占位 — 用真实测速数据替换
-  // { ip: '172.64.229.1', colo: 'NRT', note: 'jp-tokyo' },
-  // { ip: '162.158.1.1',  colo: 'ICN', note: 'kr-seoul' },
-  // { ip: '104.16.1.1',   colo: 'KIX', note: 'jp-osaka' },
-  // { ip: '172.64.1.1',   colo: 'FUK', note: 'jp-fukuoka' },
+  // === 日本 NRT (Top 5, 延迟 50ms) ===
+  { ip: '172.64.229.112', colo: 'NRT', note: 'jp-tokyo-50ms' },
+  { ip: '172.64.229.114', colo: 'NRT', note: 'jp-tokyo-50ms' },
+  { ip: '172.64.229.120', colo: 'NRT', note: 'jp-tokyo-50ms' },
+  { ip: '172.64.229.105', colo: 'NRT', note: 'jp-tokyo-51ms' },
+  { ip: '172.64.229.129', colo: 'NRT', note: 'jp-tokyo-51ms' },
 
-  // === 临时占位：使用 CF 公共 IP（保证 /sub 永远有响应）===
-  // 这些是 CF 文档里的示例 IP，**不一定快**，但能保证 503 不会发生
-  { ip: '1.1.1.1',        colo: 'NRT', note: 'cf-dns' },
+  // === 新加坡 SIN (Top 5, 延迟 71-74ms) ===
+  { ip: '172.64.146.251', colo: 'SIN', note: 'sg-singapore-71ms' },
+  { ip: '172.64.145.198', colo: 'SIN', note: 'sg-singapore-72ms' },
+  { ip: '172.64.146.105', colo: 'SIN', note: 'sg-singapore-72ms' },
+  { ip: '172.64.147.174', colo: 'SIN', note: 'sg-singapore-72ms' },
+  { ip: '172.64.149.73',  colo: 'SIN', note: 'sg-singapore-72ms' },
 ];
 
 // ASN -> operator mapping (for ?auto=1)
