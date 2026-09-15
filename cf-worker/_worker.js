@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// cf-speed-pick Worker — VLESS over WebSocket proxy with optional fallback IP.
+// cf-speed-pick Worker — VLESS over WebSocket proxy + KV-backed subscription.
 //
 // Architecture:
 //   [client] --wss/TLS--> [CF edge (优选 IP)] --> [this Worker]
@@ -10,32 +10,82 @@
 //                                                  [target site]
 //                                              (or [FALLBACK_IP] if direct fails)
 //
+// Subscription data flow:
+//   [R7000/VPS] --POST /api/put--> [Worker] --env.KV.put--> [CF KV]
+//   [client]    --GET /sub-->      [Worker] --env.KV.get --> build vless:// list
+//
 // Reference: gslege/CloudflareIP/CF-Worker/_worker.js (GPL-3.0)
-// Rewritten with: env-injected UUID, empty default fallback, English comments,
-// SPDX header, /health endpoint for diagnostics.
+// Rewritten with: env-injected UUID, KV-backed /sub, /api/put for nodes,
+//   /sub?operator=unicom|telecom, /sub?auto=1 reverse-lookup by client IP,
+//   hardcoded FALLBACK_IPS for resilience when KV is empty.
 //
 // Deployment:
 //   1. npx wrangler login
-//   2. UUID=$(uuidgen | tr 'A-Z' 'a-z'); echo "Generated UUID: $UUID"
-//   3. echo "$UUID" | npx wrangler secret put VLESS_UUID
-//   4. npx wrangler deploy
-//   5. Visit https://<worker-name>.<account-subdomain>.workers.dev/health
+//   2. UUID=$(uuidgen | tr 'A-Z' 'a-z')
+//   3. TOKEN=$(openssl rand -hex 32)
+//   4. echo "$UUID"  | npx wrangler secret put VLESS_UUID
+//   5. echo "$TOKEN" | npx wrangler secret put PUT_TOKEN
+//   6. Create KV namespace "cf-speed-ips" in CF Dashboard, paste id into wrangler.toml
+//   7. npx wrangler deploy
 //
 // Endpoints:
 //   /        — 404 (intentionally, hides existence from scanners)
-//   /health  — JSON status (UUID prefix, fallback, version)
-//   /sub     — text/plain subscription (one VLESS URI per line, all current best IPs)
+//   /health  — JSON status (UUID prefix, fallback, KV binding, FALLBACK_IPS count)
+//   /sub     — text/plain subscription (one VLESS URI per line)
+//              Query params:
+//                operator=unicom|telecom  (default: unicom)
+//                colos=NRT,SIN,HKG         (default: NRT,ICN,KIX,TPE,HKG,SIN)
+//                top=5                     (per-colo top N)
+//                min_speed=8               (drop slower IPs)
+//                auto=1                    (auto-detect operator from client IP)
+//   /api/put — node -> Worker KV upload endpoint
+//              Method: POST
+//              Headers: Authorization: Bearer <PUT_TOKEN>
+//              Query:   ?operator=unicom|telecom&colo=NRT
+//              Body:    raw CSV (cf-speed-pick output, with header)
 //   any path with Upgrade: websocket — VLESS proxy
 
 import { connect } from 'cloudflare:sockets';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 // Secrets (set via `wrangler secret put`)
 // - VLESS_UUID: client UUID (required)
+// - PUT_TOKEN:  shared secret for /api/put (32-byte hex)
 // Vars (set via wrangler.toml or dashboard)
 // - FALLBACK_IP: optional fallback when direct connect fails (e.g. "1.2.3.4:443")
-// - UPSTREAM_CACHE_BASE: optional URL of cf-speed-pick colo CSV cache (for /sub)
+// KV binding:
+// - KV: namespace "cf-speed-ips" — key = "{operator}/{colo}", value = CSV string
+
+// =====================================================================
+// FALLBACK_IPS — 兜底优选 IP（KV 没数据或失效时使用）
+//
+// 这些 IP 是你 VPS/R7000 上跑 cf-speed-pick 验证过的真实 IP。
+// 每月跑一次 cf-speed-pick，挑 Top 10 更新此列表。
+//
+// TODO: 跑一次完整测速，把真实 IP 填进来
+// 命令: ./cf-speed-pick -out /tmp/fb -colo-strategy tiered -n 200 -dt 10s \
+//        -dn 20 -max-delay 150 -colo-priority "NRT,ICN,KIX,FUK" -output-colos
+//       column -t -s, /tmp/fb/03_top.csv
+// =====================================================================
+const FALLBACK_IPS = [
+  // === 日本/韩国 colo 占大头（国内延迟低）===
+  // 示例占位 — 用真实测速数据替换
+  // { ip: '172.64.229.1', colo: 'NRT', note: 'jp-tokyo' },
+  // { ip: '162.158.1.1',  colo: 'ICN', note: 'kr-seoul' },
+  // { ip: '104.16.1.1',   colo: 'KIX', note: 'jp-osaka' },
+  // { ip: '172.64.1.1',   colo: 'FUK', note: 'jp-fukuoka' },
+
+  // === 临时占位：使用 CF 公共 IP（保证 /sub 永远有响应）===
+  // 这些是 CF 文档里的示例 IP，**不一定快**，但能保证 503 不会发生
+  { ip: '1.1.1.1',        colo: 'NRT', note: 'cf-dns' },
+];
+
+// ASN -> operator mapping (for ?auto=1)
+const TELECOM_ASN = ['as4134'];
+const UNICOM_ASN = ['as4837', 'as9929'];
+const TELECOM_ORG = ['chinatelecom', '中国电信'];
+const UNICOM_ORG = ['chinaunicom', 'unicom', '中国联通'];
 
 export default {
   async fetch(request, env, ctx) {
@@ -64,7 +114,8 @@ function handleHttp(request, env) {
       version: VERSION,
       uuid_prefix: (env.VLESS_UUID || '').slice(0, 8),
       fallback: env.FALLBACK_IP || null,
-      upstream_cache_base: env.UPSTREAM_CACHE_BASE || null,
+      has_kv: !!env.KV,
+      fallback_ips_count: FALLBACK_IPS.length,
     });
   }
 
@@ -72,23 +123,96 @@ function handleHttp(request, env) {
     return handleSubscription(request, env);
   }
 
+  if (path === '/api/put') {
+    return handlePut(request, env);
+  }
+
   return new Response('Not Found', { status: 404 });
 }
 
-// --- Subscription: dynamically build VLESS nodes from cf-speed-pick cache ---
+// --- /api/put: nodes -> Worker -> KV ---
+
+async function handlePut(request, env) {
+  // Method check
+  if (request.method !== 'POST') {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: { Allow: 'POST' },
+    });
+  }
+
+  // Auth: shared PUT_TOKEN
+  const auth = request.headers.get('Authorization') || '';
+  const expected = `Bearer ${env.PUT_TOKEN || ''}`;
+  if (!env.PUT_TOKEN || !auth || auth !== expected) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  // Parse query params
+  const url = new URL(request.url);
+  const operator = (url.searchParams.get('operator') || '').toLowerCase();
+  const colo = (url.searchParams.get('colo') || '').toUpperCase();
+
+  // Validate
+  if (!/^[a-z0-9-]+$/.test(operator)) {
+    return new Response('Bad operator (must match [a-z0-9-]+)', { status: 400 });
+  }
+  if (!/^[A-Z]{3,4}$/.test(colo)) {
+    return new Response('Bad colo (must be 3-4 uppercase letters)', { status: 400 });
+  }
+
+  // Read CSV body
+  const csv = await request.text();
+  if (!csv || csv.length > 100000) {
+    return new Response(`Bad body: empty or >100KB (got ${csv ? csv.length : 0} bytes)`, {
+      status: 413,
+    });
+  }
+
+  // Basic sanity: must start with CSV header
+  if (!csv.startsWith('ip,')) {
+    return new Response('Body must be cf-speed-pick CSV (start with "ip,")', {
+      status: 400,
+    });
+  }
+
+  // KV write with 7-day TTL (cron runs every 6h, so KV always fresh)
+  const key = `${operator}/${colo}`;
+  try {
+    await env.KV.put(key, csv, { expirationTtl: 7 * 24 * 3600 });
+  } catch (e) {
+    return new Response(`KV write failed: ${e.message}`, { status: 500 });
+  }
+
+  return new Response(
+    `OK: ${key} (${csv.length} bytes, ${csv.split('\n').length - 1} rows)\n`,
+    { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
+  );
+}
+
+// --- /sub: subscription ---
 
 async function handleSubscription(request, env) {
   const url = new URL(request.url);
-  // Query params (with safe defaults):
-  //   colos:       comma-separated IATA codes (default: NRT,ICN,KIX,TPE,HKG,SIN)
-  //   top:         per-colo top N (default: 5)
-  //   min_speed:   drop IPs slower than this MB/s (default: 0)
+
+  // Query params
+  let operator = (url.searchParams.get('operator') || 'unicom').toLowerCase();
   const colos = (url.searchParams.get('colos') || 'NRT,ICN,KIX,TPE,HKG,SIN')
     .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
   const top = clampInt(url.searchParams.get('top'), 1, 50, 5);
   const minSpeed = parseFloat(url.searchParams.get('min_speed') || '0') || 0;
 
-  const base = env.UPSTREAM_CACHE_BASE || '';
+  // ?auto=1 → detect from client IP via ip-api.com (cached 24h)
+  if (url.searchParams.get('auto') === '1') {
+    operator = await detectOperator(request, env);
+  }
+
+  if (!['unicom', 'telecom'].includes(operator)) {
+    return new Response(`Bad operator: ${operator} (use unicom or telecom)`, {
+      status: 400,
+    });
+  }
+
   const uuid = env.VLESS_UUID || '';
   const host = url.hostname;
   const fallback = env.FALLBACK_IP || '';
@@ -96,19 +220,58 @@ async function handleSubscription(request, env) {
   if (!uuid) {
     return new Response('Worker not configured: VLESS_UUID missing', { status: 503 });
   }
-  if (!base) {
-    // Fall back to the static minimal list when no upstream cache is configured.
-    return staticSubscription(uuid, host, fallback);
+
+  // 1) Try KV
+  let ips = await fetchFromKV(env, operator, colos, top, minSpeed);
+
+  // 2) Fallback to hardcoded FALLBACK_IPS (filtered by colos)
+  if (ips.length === 0) {
+    ips = filterFallback(FALLBACK_IPS, colos, top);
   }
 
-  // Fetch each colo CSV in parallel.
+  // 3) Last resort: FALLBACK_IPS unfiltered
+  if (ips.length === 0) {
+    ips = FALLBACK_IPS.slice(0, top).map(({ ip, colo, note }) => ({
+      ip, speed: 0, colo, note,
+    }));
+  }
+
+  // Final safety: never return empty
+  if (ips.length === 0) {
+    // FALLBACK_IPS is empty — return a placeholder so /sub doesn't 503
+    return new Response(
+      '# Worker FALLBACK_IPS is empty. Please update _worker.js FALLBACK_IPS array.\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      }
+    );
+  }
+
+  const nodes = ips.map(({ ip, speed, colo, note }) =>
+    buildVlessUri({
+      uuid, host, ip, port: 443, fallback, colo, speed, note,
+    })
+  );
+
+  return new Response(nodes.join('\n') + '\n', {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Profile-Update-Interval': '6',
+      'Subscription-Userinfo': `upload=0; download=0; total=0; expire=0`,
+    },
+  });
+}
+
+// Fetch all colo CSVs from KV in parallel, parse, return flat IP list.
+async function fetchFromKV(env, operator, colos, top, minSpeed) {
+  if (!env.KV) return [];
   const fetches = colos.map(async (colo) => {
+    const key = `${operator}/${colo}`;
     try {
-      const csvUrl = `${stripSlash(base)}/cache/colo/${colo}.csv`;
-      const r = await fetch(csvUrl, { cf: { cacheTtl: 60 } });
-      if (!r.ok) return [];
-      const text = await r.text();
-      const lines = text.split('\n').slice(1); // skip header
+      const csv = await env.KV.get(key);
+      if (!csv) return [];
+      const lines = csv.split('\n').slice(1); // skip header
       const ips = [];
       for (const line of lines) {
         const parts = line.split(',');
@@ -125,44 +288,64 @@ async function handleSubscription(request, env) {
       return [];
     }
   });
-
   const nested = await Promise.all(fetches);
-  const ips = nested.flat();
-  if (ips.length === 0) {
-    return new Response('No IPs available from upstream cache. Check VPS colo/*.csv exists.', { status: 502 });
-  }
-
-  const nodes = ips.map(({ ip, speed, colo }) =>
-    buildVlessUri({
-      uuid, host, ip, port: 443, fallback, colo, speed,
-    })
-  );
-
-  // Text/plain body, one node per line. Most clients accept this.
-  return new Response(nodes.join('\n') + '\n', {
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      // Hint to clients that this is a subscription (some clients respect this).
-      'Profile-Update-Interval': '6',
-      'Subscription-Userinfo': `upload=0; download=0; total=0; expire=0`,
-    },
-  });
+  return nested.flat();
 }
 
-// Minimal static list (used when UPSTREAM_CACHE_BASE is not set).
-function staticSubscription(uuid, host, fallback) {
-  const defaults = [
-    { ip: '172.64.229.0',  colo: 'NRT', note: 'jp' },
-    { ip: '104.16.0.0',    colo: 'SJC', note: 'us' },
-    { ip: '104.26.0.0',    colo: 'FRA', note: 'de' },
-    { ip: '188.114.96.0',  colo: 'AMS', note: 'nl' },
-  ];
-  const nodes = defaults.map(d =>
-    buildVlessUri({ uuid, host, ip: d.ip, port: 443, fallback, colo: d.colo, speed: 0, note: d.note })
-  );
-  return new Response(nodes.join('\n') + '\n', {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
+// Filter FALLBACK_IPS by colos (matched first, then others).
+function filterFallback(fallback, colos, top) {
+  const matched = [];
+  const others = [];
+  for (const item of fallback) {
+    const enriched = { ip: item.ip, speed: 0, colo: item.colo, note: item.note };
+    if (colos.includes(item.colo)) matched.push(enriched);
+    else others.push(enriched);
+  }
+  return [...matched, ...others].slice(0, top);
+}
+
+// Detect operator from client IP using ip-api.com (free 45 req/day).
+// Cached in KV for 24h to stay under the limit.
+async function detectOperator(request, env) {
+  const clientIp = request.headers.get('CF-Connecting-IP');
+  if (!clientIp) return 'unicom';
+
+  // Try cache
+  const cacheKey = `asn-lookup:${clientIp}`;
+  if (env.KV) {
+    try {
+      const cached = await env.KV.get(cacheKey);
+      if (cached) return cached;
+    } catch (_) {}
+  }
+
+  // Lookup
+  try {
+    const r = await fetch(`http://ip-api.com/json/${clientIp}?fields=as,org,status`, {
+      cf: { cacheTtl: 3600 },
+    });
+    if (!r.ok) return 'unicom';
+    const d = await r.json();
+    if (d.status !== 'success') return 'unicom';
+
+    const asn = (d.as || '').toLowerCase();
+    const org = (d.org || '').toLowerCase();
+    let op = 'unicom';
+
+    if (TELECOM_ASN.some(a => asn.includes(a)) || TELECOM_ORG.some(o => org.includes(o))) {
+      op = 'telecom';
+    } else if (UNICOM_ASN.some(a => asn.includes(a)) || UNICOM_ORG.some(o => org.includes(o))) {
+      op = 'unicom';
+    }
+
+    // Cache 24h
+    if (env.KV) {
+      await env.KV.put(cacheKey, op, { expirationTtl: 24 * 3600 }).catch(() => {});
+    }
+    return op;
+  } catch (_) {
+    return 'unicom';
+  }
 }
 
 // Build a single VLESS URI.
@@ -180,7 +363,8 @@ function buildVlessUri({ uuid, host, ip, port, fallback, colo, speed, note }) {
     `host=${host}`,
     `path=${path}`,
   ];
-  const tag = note || (speed > 0 ? `${colo} ${speed.toFixed(2)}MB/s` : colo);
+  const tag = note
+    || (speed > 0 ? `${colo} ${speed.toFixed(2)}MB/s` : colo);
   return `vless://${uuid}@${ip}:${port}?${params.join('&')}#${encodeURIComponent(tag)}`;
 }
 
@@ -335,8 +519,6 @@ function clampInt(s, min, max, dflt) {
   if (Number.isNaN(n)) return dflt;
   return Math.min(max, Math.max(min, n));
 }
-
-function stripSlash(s) { return s.endsWith('/') ? s.slice(0, -1) : s; }
 
 function jsonResponse(obj) {
   return new Response(JSON.stringify(obj, null, 2), {

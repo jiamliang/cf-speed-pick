@@ -10,6 +10,7 @@
 #   - CLOUDFLARE_API_TOKEN  (CF Dashboard 创建的 Token, "Edit Cloudflare Workers" 模板)
 #   - CLOUDFLARE_ACCOUNT_ID (CF Dashboard 首页右下角)
 #   - VLESS_UUID            (cf-worker 用的 UUID, e.g. uuidgen | tr 'A-Z' 'a-z')
+#   - PUT_TOKEN             (32-byte hex, openssl rand -hex 32 — 节点写 KV 用的共享密钥)
 
 name: Deploy Worker
 
@@ -81,10 +82,11 @@ jobs:
         working-directory: ${{ needs.detect.outputs.worker_dir }}
         env:
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
+          PUT_TOKEN: ${{ secrets.PUT_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # 只在 cf-worker 部署时设置 VLESS_UUID
+          # 只在 cf-worker 部署时设置 VLESS_UUID 和 PUT_TOKEN
           # 注意：secret 未设置时只是警告，不阻塞部署。
           # UUID 可以之后在 CF Dashboard → Workers → cf-speed-proxy → Settings → Variables 里手动配。
           if [ "${{ needs.detect.outputs.worker_dir }}" = "cf-worker" ]; then
@@ -93,12 +95,17 @@ jobs:
             else
               echo "$VLESS_UUID" | npx wrangler secret put VLESS_UUID
             fi
+            if [ -z "$PUT_TOKEN" ]; then
+              echo "::warning::PUT_TOKEN secret is empty or not set. The Worker will deploy but /api/put will reject all writes."
+            else
+              echo "$PUT_TOKEN" | npx wrangler secret put PUT_TOKEN
+            fi
           fi
           # 将来 docker-proxy-worker 加自己的 secret 在这里扩展
 
       - name: Deploy to Cloudflare
         working-directory: ${{ needs.detect.outputs.worker_dir }}
-        run: npx wrangler deploy
+        run: npx wrangler deploy 2>&1 | tee deploy.log
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

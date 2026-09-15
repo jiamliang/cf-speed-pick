@@ -16,6 +16,9 @@ OUT=/var/lib/cf-speed-pick/out/full
 LOG=/var/log/cf-speed-pick.log
 NODE=$(hostname)
 
+# Worker KV 上传（cf-speed-pick colo 桶 → Cloudflare KV）
+UPLOAD=/usr/local/bin/upload-to-kv.sh
+
 mkdir -p "$OUT" "$(dirname "$LOG")"
 
 TS=$(date +%Y%m%d-%H%M%S)
@@ -57,6 +60,17 @@ fi
 # 重载 nginx（让新文件立即可访问）
 if command -v nginx >/dev/null 2>&1; then
     nginx -s reload 2>/dev/null || true
+fi
+
+# 上传 colo 桶到 Worker KV（胶州 VPS 是电信）
+if [ -x "$UPLOAD" ] && [ -n "${WORKER_URL:-}" ] && [ -n "${PUT_TOKEN:-}" ]; then
+    WORKER_URL="$WORKER_URL" \
+    PUT_TOKEN="$PUT_TOKEN" \
+    OPERATOR=telecom \
+    "$UPLOAD" >> "$LOG" 2>&1 \
+        || echo "[$TS] upload-to-kv 失败（不影响 cron 退出码）" >> "$LOG"
+else
+    echo "[$TS] 跳过 upload-to-kv（UPLOAD=$UPLOAD, WORKER_URL/WORKER_URL/TOKEN 已配？）" >> "$LOG"
 fi
 
 exit $RC

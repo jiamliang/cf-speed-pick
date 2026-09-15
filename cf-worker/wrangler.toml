@@ -2,9 +2,10 @@
 #
 # After editing this file:
 #   1. Set the secret UUID once:  echo "$UUID" | npx wrangler secret put VLESS_UUID
-#   2. Deploy:                    npx wrangler deploy
+#   2. Set the PUT_TOKEN secret:  echo "$TOKEN" | npx wrangler secret put PUT_TOKEN
+#   3. Deploy:                    npx wrangler deploy
 #
-# UUID itself is NOT stored here — it's a Secret, set via `wrangler secret put`.
+# UUID and PUT_TOKEN are NOT stored here — they're Secrets, set via `wrangler secret put`.
 
 name = "cf-speed-proxy"
 main = "_worker.js"
@@ -22,11 +23,13 @@ enabled = true
 # Examples: "1.2.3.4:443" (your VPS) or "" to disable (default).
 FALLBACK_IP = ""
 
-# Optional URL of the cf-speed-pick VPS cache root.
-# Example: "https://cf-cache.example.com"  (no trailing slash)
-# When set, /sub dynamically fetches colo CSVs from {UPSTREAM_CACHE_BASE}/cache/colo/{COLO}.csv
-# When empty, /sub returns a static minimal list.
-UPSTREAM_CACHE_BASE = ""
+# CF KV namespace for optimal IPs storage.
+# Created in CF Dashboard > Workers & Pages > KV.
+# Nodes POST colo CSVs to /api/put, Worker writes to KV here.
+# /sub reads from KV to build the subscription.
+[[kv_namespaces]]
+binding = "KV"
+id = "7753f95a1f4e444d8d0142d69f5e715a"
 
 # Bind vless.cf.peeweecap.com to this Worker.
 # When custom_domain = true, wrangler auto-creates the DNS record AND
