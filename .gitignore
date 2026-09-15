@@ -27,3 +27,9 @@ cf-worker/.wrangler/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets (real env files; commit env.example but not real ones)
+scripts/env
+.env
+.env.local
+

@@ -8,6 +8,10 @@
 # VPS 自己也是测速节点，跑完后也把自己的 Top 推到自己 cache。
 #
 # 注意：POSIX shell 兼容，不依赖 bash。
+#
+# 必填环境变量（在 /etc/cf-speed-pick/env 里配）：
+#   WORKER_URL  — https://vless.cf.peeweecap.com
+#   PUT_TOKEN   — Worker 的 PUT_TOKEN secret
 
 set -eu
 
@@ -18,6 +22,15 @@ NODE=$(hostname)
 
 # Worker KV 上传（cf-speed-pick colo 桶 → Cloudflare KV）
 UPLOAD=/usr/local/bin/upload-to-kv.sh
+ENV_FILE=/etc/cf-speed-pick/env
+
+# source 环境变量
+if [ -f "$ENV_FILE" ]; then
+    . "$ENV_FILE"
+fi
+
+WORKER_URL="${WORKER_URL:-}"
+PUT_TOKEN="${PUT_TOKEN:-}"
 
 mkdir -p "$OUT" "$(dirname "$LOG")"
 
@@ -63,14 +76,14 @@ if command -v nginx >/dev/null 2>&1; then
 fi
 
 # 上传 colo 桶到 Worker KV（胶州 VPS 是电信）
-if [ -x "$UPLOAD" ] && [ -n "${WORKER_URL:-}" ] && [ -n "${PUT_TOKEN:-}" ]; then
+if [ -x "$UPLOAD" ] && [ -n "$WORKER_URL" ] && [ -n "$PUT_TOKEN" ]; then
     WORKER_URL="$WORKER_URL" \
     PUT_TOKEN="$PUT_TOKEN" \
     OPERATOR=telecom \
     "$UPLOAD" >> "$LOG" 2>&1 \
         || echo "[$TS] upload-to-kv 失败（不影响 cron 退出码）" >> "$LOG"
 else
-    echo "[$TS] 跳过 upload-to-kv（UPLOAD=$UPLOAD, WORKER_URL/WORKER_URL/TOKEN 已配？）" >> "$LOG"
+    echo "[$TS] 跳过 upload-to-kv（UPLOAD=$UPLOAD, WORKER_URL/TOKEN 已配？）" >> "$LOG"
 fi
 
 exit $RC
