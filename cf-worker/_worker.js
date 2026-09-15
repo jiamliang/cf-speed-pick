@@ -207,8 +207,8 @@ async function handleSubscription(request, env) {
     operator = await detectOperator(request, env);
   }
 
-  if (!['unicom', 'telecom'].includes(operator)) {
-    return new Response(`Bad operator: ${operator} (use unicom or telecom)`, {
+  if (!['unicom', 'telecom', 'test'].includes(operator)) {
+    return new Response(`Bad operator: ${operator} (use unicom, telecom, or test)`, {
       status: 400,
     });
   }
