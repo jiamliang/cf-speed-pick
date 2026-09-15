@@ -33,7 +33,12 @@
 //   /health  — JSON status (UUID prefix, fallback, KV binding, FALLBACK_IPS count)
 //   /sub     — text/plain subscription (one VLESS URI per line)
 //              Query params:
-//                operator=unicom|telecom  (default: unicom)
+//                operator=unicom|telecom|auto|test  (default: unicom)
+//                  unicom — 只读 unicom/* KV
+//                  telecom — 只读 telecom/* KV
+//                  auto — ?auto=1 自动反查 client IP 算出来的 operator
+//                         若是 unicom/telecom → 单读一个
+//                         若是其他（移动/教育网/未知/ip-api 失败）→ 合并 unicom + telecom
 //                colos=NRT,SIN,HKG         (default: NRT,ICN,KIX,TPE,HKG,SIN)
 //                top=5                     (per-colo top N)
 //                min_speed=8               (drop slower IPs)
@@ -84,8 +89,16 @@ const FALLBACK_IPS = [
 // ASN -> operator mapping (for ?auto=1)
 const TELECOM_ASN = ['as4134'];
 const UNICOM_ASN = ['as4837', 'as9929'];
+const MOBILE_ASN = ['as9808', 'as58453', 'as56041', 'as56040'];  // 中国移动
+const EDU_NET_ORG = ['cernet', '教育网', 'china education'];
+const GREAT_WALL_ORG = ['greatwall', '长城宽带', 'gwbn'];
 const TELECOM_ORG = ['chinatelecom', '中国电信'];
 const UNICOM_ORG = ['chinaunicom', 'unicom', '中国联通'];
+
+// /sub?auto=1 解析后的 operator 值
+// 'unicom' / 'telecom' — 确定的运营商
+// 'auto'            — 未知（移动/教育网/长城/境外/失败）→ 合并 unicom + telecom
+const OP_UNKNOWN = 'auto';
 
 export default {
   async fetch(request, env, ctx) {
@@ -207,8 +220,8 @@ async function handleSubscription(request, env) {
     operator = await detectOperator(request, env);
   }
 
-  if (!['unicom', 'telecom', 'test'].includes(operator)) {
-    return new Response(`Bad operator: ${operator} (use unicom, telecom, or test)`, {
+  if (!['unicom', 'telecom', 'auto', 'test'].includes(operator)) {
+    return new Response(`Bad operator: ${operator} (use unicom, telecom, auto, or test)`, {
       status: 400,
     });
   }
@@ -222,7 +235,18 @@ async function handleSubscription(request, env) {
   }
 
   // 1) Try KV
-  let ips = await fetchFromKV(env, operator, colos, top, minSpeed);
+  //    operator='auto' → 合并 unicom + telecom（移动/教育网/未知运营商走这条）
+  let ips;
+  if (operator === 'auto') {
+    const [uni, tel] = await Promise.all([
+      fetchFromKV(env, 'unicom', colos, top, minSpeed),
+      fetchFromKV(env, 'telecom', colos, top, minSpeed),
+    ]);
+    // 简单合并：unicom 在前（先返回国内通用的）
+    ips = [...uni, ...tel];
+  } else {
+    ips = await fetchFromKV(env, operator, colos, top, minSpeed);
+  }
 
   // 2) Fallback to hardcoded FALLBACK_IPS (filtered by colos)
   if (ips.length === 0) {
@@ -306,9 +330,14 @@ function filterFallback(fallback, colos, top) {
 
 // Detect operator from client IP using ip-api.com (free 45 req/day).
 // Cached in KV for 24h to stay under the limit.
+//
+// Returns:
+//   'unicom'  — 中国联通
+//   'telecom' — 中国电信
+//   'auto'    — 未知（移动/教育网/长城/境外/ip-api 失败/无 IP 头）→ 合并 unicom + telecom
 async function detectOperator(request, env) {
   const clientIp = request.headers.get('CF-Connecting-IP');
-  if (!clientIp) return 'unicom';
+  if (!clientIp) return OP_UNKNOWN;
 
   // Try cache
   const cacheKey = `asn-lookup:${clientIp}`;
@@ -320,32 +349,33 @@ async function detectOperator(request, env) {
   }
 
   // Lookup
+  let result = OP_UNKNOWN;
   try {
     const r = await fetch(`http://ip-api.com/json/${clientIp}?fields=as,org,status`, {
       cf: { cacheTtl: 3600 },
     });
-    if (!r.ok) return 'unicom';
-    const d = await r.json();
-    if (d.status !== 'success') return 'unicom';
+    if (r.ok) {
+      const d = await r.json();
+      if (d.status === 'success') {
+        const asn = (d.as || '').toLowerCase();
+        const org = (d.org || '').toLowerCase();
 
-    const asn = (d.as || '').toLowerCase();
-    const org = (d.org || '').toLowerCase();
-    let op = 'unicom';
-
-    if (TELECOM_ASN.some(a => asn.includes(a)) || TELECOM_ORG.some(o => org.includes(o))) {
-      op = 'telecom';
-    } else if (UNICOM_ASN.some(a => asn.includes(a)) || UNICOM_ORG.some(o => org.includes(o))) {
-      op = 'unicom';
+        if (TELECOM_ASN.some(a => asn.includes(a)) || TELECOM_ORG.some(o => org.includes(o))) {
+          result = 'telecom';
+        } else if (UNICOM_ASN.some(a => asn.includes(a)) || UNICOM_ORG.some(o => org.includes(o))) {
+          result = 'unicom';
+        }
+        // 移动 / 教育网 / 长城 / 境外 — result 保持 OP_UNKNOWN
+        // 其他无法识别 — result 保持 OP_UNKNOWN
+      }
     }
+  } catch (_) {}
 
-    // Cache 24h
-    if (env.KV) {
-      await env.KV.put(cacheKey, op, { expirationTtl: 24 * 3600 }).catch(() => {});
-    }
-    return op;
-  } catch (_) {
-    return 'unicom';
+  // Cache 24h (cache whatever we got, even 'auto')
+  if (env.KV) {
+    await env.KV.put(cacheKey, result, { expirationTtl: 24 * 3600 }).catch(() => {});
   }
+  return result;
 }
 
 // Build a single VLESS URI.
