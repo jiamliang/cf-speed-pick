@@ -1,19 +1,12 @@
 {
   "name": "cf-docker-proxy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Cloudflare Worker proxying Docker registry requests for 8 cf.peeweecap.com subdomains",
   "license": "MIT",
   "scripts": {
-    "deploy:docker": "wrangler deploy --env docker",
-    "deploy:quay": "wrangler deploy --env quay",
-    "deploy:gcr": "wrangler deploy --env gcr",
-    "deploy:k8s-gcr": "wrangler deploy --env k8s-gcr",
-    "deploy:k8s": "wrangler deploy --env k8s",
-    "deploy:ghcr": "wrangler deploy --env ghcr",
-    "deploy:cloudsmith": "wrangler deploy --env cloudsmith",
-    "deploy:ecr": "wrangler deploy --env ecr",
-    "deploy:all": "npm run deploy:docker && npm run deploy:quay && npm run deploy:gcr && npm run deploy:k8s-gcr && npm run deploy:k8s && npm run deploy:ghcr && npm run deploy:cloudsmith && npm run deploy:ecr",
+    "deploy": "wrangler deploy",
+    "delete": "wrangler delete --force",
     "dev": "wrangler dev"
   },
   "devDependencies": {

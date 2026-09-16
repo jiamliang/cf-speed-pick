@@ -105,17 +105,7 @@ jobs:
 
       - name: Deploy to Cloudflare
         working-directory: ${{ needs.detect.outputs.worker_dir }}
+        run: npx wrangler deploy 2>&1 | tee deploy.log
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          # docker-proxy-worker 在 wrangler.toml 里配了 8 个 env（每子域名一个），
-          # 需要逐个部署；其它 worker_dir 跑单次 deploy。
-          if [ "${{ needs.detect.outputs.worker_dir }}" = "docker-proxy-worker" ]; then
-            for env in docker quay gcr k8s-gcr k8s ghcr cloudsmith ecr; do
-              echo "=== Deploying env: $env ==="
-              npx wrangler deploy --env "$env" 2>&1 | tee -a deploy.log
-            done
-          else
-            npx wrangler deploy 2>&1 | tee deploy.log
-          fi

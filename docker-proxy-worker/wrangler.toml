@@ -2,84 +2,47 @@ name = "cf-docker-proxy"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 
-# No top-level [vars] by design:
-# CUSTOM_DOMAIN / MODE / TARGET_UPSTREAM differ per registry, so each env
-# sets its own values. Upstream src/index.js reads them as free globals.
-
-# ======================================================================
-# 8 environments, one per upstream registry.
-# Each env is a separate Worker deployment (independent script + routes)
-# under the same Worker name.
-# ======================================================================
-
-[env.docker.vars]
-CUSTOM_DOMAIN = "docker.cf.peeweecap.com"
+# Upstream cloudflare-docker-proxy reads CUSTOM_DOMAIN as a free global and
+# builds its `routes` table as e.g. "docker." + CUSTOM_DOMAIN. Set the base
+# domain once and the 8 subdomains below route via the Worker's host-header
+# dispatch (routeByHosts in src/index.js).
+[vars]
+CUSTOM_DOMAIN = "cf.peeweecap.com"
 MODE = "production"
-TARGET_UPSTREAM = "https://registry-1.docker.io"
+TARGET_UPSTREAM = ""
 
-[[env.docker.routes]]
+# Bind 8 subdomains to this single Worker. CF routes are matched longest
+# prefix; the Worker uses the incoming Host header to pick the upstream.
+# zone_name routing (vs custom_domain = true) is the precedent set by
+# cf-worker for vless.cf.peeweecap.com and avoids the WebSocket/edge quirks.
+[[routes]]
 pattern = "docker.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.quay.vars]
-CUSTOM_DOMAIN = "quay.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://quay.io"
-
-[[env.quay.routes]]
+[[routes]]
 pattern = "quay.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.gcr.vars]
-CUSTOM_DOMAIN = "gcr.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://gcr.io"
-
-[[env.gcr.routes]]
+[[routes]]
 pattern = "gcr.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.k8s-gcr.vars]
-CUSTOM_DOMAIN = "k8s-gcr.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://k8s.gcr.io"
-
-[[env.k8s-gcr.routes]]
+[[routes]]
 pattern = "k8s-gcr.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.k8s.vars]
-CUSTOM_DOMAIN = "k8s.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://registry.k8s.io"
-
-[[env.k8s.routes]]
+[[routes]]
 pattern = "k8s.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.ghcr.vars]
-CUSTOM_DOMAIN = "ghcr.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://ghcr.io"
-
-[[env.ghcr.routes]]
+[[routes]]
 pattern = "ghcr.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.cloudsmith.vars]
-CUSTOM_DOMAIN = "cloudsmith.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://docker.cloudsmith.io"
-
-[[env.cloudsmith.routes]]
+[[routes]]
 pattern = "cloudsmith.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
 
-[env.ecr.vars]
-CUSTOM_DOMAIN = "ecr.cf.peeweecap.com"
-MODE = "production"
-TARGET_UPSTREAM = "https://public.ecr.aws"
-
-[[env.ecr.routes]]
+[[routes]]
 pattern = "ecr.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
