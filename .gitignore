@@ -14,9 +14,10 @@ cf-speed-pick.exe
 # Go
 vendor/
 
-# cf-worker
-cf-worker/node_modules/
-cf-worker/.wrangler/
+# Cloudflare Workers — covers cf-worker/ and any other worker dirs (e.g. docker-proxy-worker/)
+**/node_modules/
+**/.wrangler/
+**/dist/
 
 # IDE
 .idea/
