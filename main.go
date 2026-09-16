@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -41,8 +40,8 @@ var (
 	flagTCPTimes      = flag.Int("t", 4, "TCPing 每个 IP 测几次")
 	flagTCPMaxDelayMS = flag.Int("max-delay", 200, "Layer 1/2 最大平均延迟（ms）")
 	flagTCPMaxLoss    = flag.Float64("max-loss", 0.2, "Layer 1/2 最大丢包率 [0,1]")
-	flagHTTPURL       = flag.String("url", "https://cf.xiu2.xyz/url", "HTTPing + 下载测速的 URL（必须是 CF-fronted 域名）")
-	flagHTTPColo      = flag.String("colo", "", "只保留指定 IATA 码（逗号分隔，如 HKG,NRT,SJC）")
+	flagHTTPURL       = flag.String("url", "https://www.cloudflare.com/", "Layer 2 HTTPing 的 URL（HEAD；要 200 + server: cloudflare + cf-ray）")
+	flagDownloadURL   = flag.String("download-url", "https://speed.cloudflare.com/__down?bytes=30000000", "Layer 3 下载测速的 URL（CF speed endpoint）")
 	flagHTTPStatus    = flag.Int("status", 0, "期望的 HTTP 状态码（0=接受 200/301/302）")
 	flagDownloadTime  = flag.Duration("dt", 10*time.Second, "每个 IP 下载测速时长")
 	flagDownloadTopN  = flag.Int("dn", 10, "最终输出 Top N")
@@ -50,11 +49,8 @@ var (
 	flagSkipDownload  = flag.Bool("skip-download", false, "跳过 Layer 3，只输出 Layer 2 结果")
 	flagPort          = flag.Int("tp", 443, "TCP 端口")
 	flagShowVersion   = flag.Bool("version", false, "打印版本")
-	flagColoPriority  = flag.String("colo-priority", "", "colo 优先级列表（逗号分隔 IATA 码，空=默认 NRT,ICN,KIX,TPE,HKG,MFM,...）")
-	flagColoStrategy  = flag.String("colo-strategy", "tiered", "Layer 3 采样策略：tiered（分层）/ only（只测优先级）/ all（全平等）")
 	flagInputCSV      = flag.String("input", "", "从 CSV 加载候选 IP（跳过 IP 池构造 + Layer 1）；列：ip,delay_ms,colo")
-	flagOutputColos   = flag.Bool("output-colos", false, "按 colo 分桶输出多个 CSV（VPS 端用，给路由器订阅）")
-	flagSkipHttping   = flag.Bool("skip-httping", false, "跳过 Layer 2；要求输入已有 colo 字段（如 -input 02_httping.csv）")
+	flagSkipHttping   = flag.Bool("skip-httping", true, "跳过 Layer 2（默认开）。要求 -input 已有 colo 字段，或 Layer 1 直接进 Layer 3")
 	flagRanges        = flag.String("ranges", "", "CIDR 文件路径（每行一个，支持 # 注释）。空=用内置段")
 )
 
@@ -140,10 +136,10 @@ func run() error {
 		}
 	}
 
-	// Layer 2: HTTPing
+	// Layer 2: HTTPing（默认跳过：cf.xiu2.xyz 现在返 403，无 cf-ray 校验必要）
 	var layer2Result PingDelaySet
 	if *flagSkipHttping {
-		fmt.Println("\n[跳过] -skip-httping 已设置，直接用输入数据的 colo 字段")
+		fmt.Println("\n[跳过] -skip-httping 默认开启，跳过 Layer 2 HEAD 探测")
 		layer2Result = layer1Result
 	} else {
 		httpParams := HTTPingParams{
@@ -153,7 +149,6 @@ func run() error {
 			PingTimes:   *flagTCPTimes,
 			MaxDelay:    time.Duration(*flagTCPMaxDelayMS) * time.Millisecond,
 			MaxLoss:     *flagTCPMaxLoss,
-			CFColo:      *flagHTTPColo,
 			MinStatusOK: *flagHTTPStatus,
 		}
 		if httpParams.Routines < 10 {
@@ -185,13 +180,11 @@ func run() error {
 	}
 
 	dlParams := DownloadParams{
-		Port:         *flagPort,
-		URL:          *flagHTTPURL,
-		Timeout:      *flagDownloadTime,
-		MaxResults:   *flagDownloadTopN,
-		MinSpeedMB:   *flagDownloadMinSp,
-		ColoPriority: splitCSV(*flagColoPriority),
-		Strategy:     ParseTierStrategy(*flagColoStrategy),
+		Port:       *flagPort,
+		URL:        *flagDownloadURL,
+		Timeout:    *flagDownloadTime,
+		MaxResults: *flagDownloadTopN,
+		MinSpeedMB: *flagDownloadMinSp,
 	}
 	top := RunDownload(layer2Result, dlParams)
 
@@ -205,14 +198,6 @@ func run() error {
 	}
 
 	fmt.Printf("\n✅ Top %d → %s\n", len(top), path)
-
-	// 按 colo 分桶输出（VPS 端给路由器订阅用）
-	if *flagOutputColos {
-		if err := WriteColoBuckets(*flagOut, top); err != nil {
-			return fmt.Errorf("write colo buckets: %w", err)
-		}
-		fmt.Printf("📦 按 colo 分桶输出：%s/colo/*.csv\n", *flagOut)
-	}
 	return nil
 }
 
@@ -237,23 +222,20 @@ Layer 1 TCPing:
   -max-delay int         最大平均延迟 ms (默认 200)
   -max-loss float        最大丢包率 (默认 0.2)
 
-Layer 2 HTTPing:
-  -url string            测试 URL (默认 https://cf.xiu2.xyz/url)
-  -colo string           只保留指定 IATA 码（逗号分隔）
+Layer 2 HTTPing (默认跳过):
+  -url string            测试 URL (默认 https://www.cloudflare.com/)
   -status int            期望 HTTP 状态码 (0=200/301/302)
+  -skip-httping          跳过 Layer 2 (默认 true)
 
 Layer 3 下载:
+  -download-url string   下载 URL (默认 CF speed endpoint)
   -skip-download         只跑到 Layer 2
   -dt duration           每 IP 下载测速时长 (默认 10s)
   -dn int                取 Top N (默认 10)
   -min-speed float       最低速度 MB/s (默认 0.05)
-  -colo-priority string  colo 优先级列表（逗号分隔 IATA 码）
-  -colo-strategy string  采样策略 tiered|only|all (默认 tiered)
 
 输入模式:
   -input string          从 CSV 加载候选 IP（跳过 IP 池构造 + Layer 1）
-  -skip-httping          跳过 Layer 2（要求 -input 已有 colo 字段）
-  -output-colos          按 colo 分桶输出多个 CSV（out/colo/NRT.csv 等）
   -ranges string         CIDR 文件路径（每行一个，支持 # 注释）。空=用内置段
 
 其他:
@@ -263,20 +245,4 @@ Layer 3 下载:
 ⚠️  测速前必须关闭科学上网 / VPN / 代理。
     检测：curl https://ifconfig.me 应返回你真实的国内 IP。
 `, version)
-}
-
-// splitCSV helper: 逗号分隔字符串切分，去除空白和空项。
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }

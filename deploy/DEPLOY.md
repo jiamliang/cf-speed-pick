@@ -57,8 +57,8 @@ vi .env
 tail -50 speedtest.log
 
 # 验证 KV 里有数据
-curl -s "https://vless.cf.peeweecap.com/sub?operator=unicom&colos=NRT&top=3"
-# 应该返回 3 个 vless:// 用真实优选 IP
+curl -s "https://vless.cf.peeweecap.com/sub?operator=unicom&top=10"
+# 应该返回 10 个 vless:// 用真实优选 IP（按速度降序）
 ```
 
 ---

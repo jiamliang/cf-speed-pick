@@ -24,20 +24,18 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // DownloadParams 下载测速参数。
 type DownloadParams struct {
-	Port         int           // 端口（默认 443）
-	URL          string        // 下载文件 URL（默认 https://cf.xiu2.xyz/url）
-	Timeout      time.Duration // 单 IP 最长测速时间（默认 10s）
-	BufferSize   int           // 读 buffer 大小（默认 4096）
-	DisableLog   bool          // 调试输出开关
-	MinSpeedMB   float64       // 过滤：低于此速度的 IP 丢弃（默认 0.05 MB/s）
-	MaxResults   int           // 返回 Top N（默认 10；<=0 表示全部）
-	ColoPriority []string      // colo 优先级列表（空 = 默认）
-	Strategy     TierStrategy  // 采样策略（默认 Tiered）
+	Port       int           // 端口（默认 443）
+	URL        string        // 下载文件 URL（默认 CF speed endpoint）
+	Timeout    time.Duration // 单 IP 最长测速时间（默认 10s）
+	BufferSize int           // 读 buffer 大小（默认 4096）
+	MinSpeedMB float64       // 过滤：低于此速度的 IP 丢弃（默认 0.05 MB/s）
+	MaxResults int           // 返回 Top N（默认 10；<=0 表示全部）
 }
 
 func (p *DownloadParams) defaults() {
@@ -45,7 +43,7 @@ func (p *DownloadParams) defaults() {
 		p.Port = 443
 	}
 	if p.URL == "" {
-		p.URL = "https://cf.xiu2.xyz/url"
+		p.URL = "https://speed.cloudflare.com/__down?bytes=30000000"
 	}
 	if p.Timeout <= 0 {
 		p.Timeout = 10 * time.Second
@@ -62,62 +60,58 @@ func (p *DownloadParams) defaults() {
 type DownloadResult struct {
 	IP    *net.IPAddr
 	Speed float64 // MB/s
-	Colo  string
-	Tier  int // colo 所在 tier（1/2/3/99）
+	Colo  string  // 保留作为标签（不再参与分桶）
 }
 
-// RunDownload 跑 Layer 3：按 colo 优先级分桶采样 → 单线程顺序测速 → 综合排序取 Top N。
-// 综合排序：先按 tier（越小越优先），同 tier 内按速度降序。
+// RunDownload 跑 Layer 3：全部 IP 并发测速 → 按速度降序取 Top N。
+// 不分 colo 桶，不分 tier（用户决策：速度优先）。
 func RunDownload(input PingDelaySet, params DownloadParams) []DownloadResult {
 	params.defaults()
 	if len(input) == 0 {
 		return nil
 	}
 
-	queue := buildColoQueue(input, params.ColoPriority, params.Strategy)
-	if len(queue) == 0 {
-		return nil
-	}
+	fmt.Printf("\n[Layer 3/3] 下载测速 %d IPs · 单IP最长%.0fs · 取Top %d\n",
+		len(input), params.Timeout.Seconds(), params.MaxResults)
 
-	totalIPs := 0
-	for _, b := range queue {
-		totalIPs += len(b.IPs)
-	}
-	fmt.Printf("\n[Layer 3/3] 下载测速 %d IPs（从 %d 候选采样）· 单IP最长%.0fs · 取Top %d\n",
-		totalIPs, len(input), params.Timeout.Seconds(), params.MaxResults)
-	printColoQueue(queue, params.Strategy)
+	// 并发测速
+	const concurrency = 200
+	sem := make(chan struct{}, concurrency)
+	var (
+		mu      sync.Mutex
+		results = make([]DownloadResult, 0, len(input))
+		wg      sync.WaitGroup
+		idx     int64
+	)
 
-	results := make([]DownloadResult, 0, totalIPs)
-
-	// 跨桶累计 idx
-	idx := 0
-	for _, b := range queue {
-		fmt.Printf("\n[Tier %d / %s] %d IPs:\n", b.Tier, b.Colo, len(b.IPs))
-		for _, p := range b.IPs {
-			idx++
-			speed, colo := measureDownload(p.IP, params)
-			// 用桶的 tier 信息（measureDownload 返回的 colo 可能与桶不一致，以桶为准）
+	for _, p := range input {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(pd PingData) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			speed, colo := measureDownload(pd.IP, params)
 			if colo == "" {
-				colo = b.Colo
+				colo = pd.Colo // fallback 到上层输入的 colo
 			}
+			atomic.AddInt64(&idx, 1)
 			fmt.Printf("  [%d] %-15s speed=%6.2f MB/s colo=%s\n",
-				idx, p.IP.String(), speed, colo)
+				idx, pd.IP.String(), speed, colo)
 			if speed >= params.MinSpeedMB {
+				mu.Lock()
 				results = append(results, DownloadResult{
-					IP:    p.IP,
+					IP:    pd.IP,
 					Speed: speed,
 					Colo:  colo,
-					Tier:  b.Tier,
 				})
+				mu.Unlock()
 			}
-		}
+		}(p)
 	}
+	wg.Wait()
 
-	// 综合排序：先 tier 升序，同 tier 内按速度降序
+	// 纯速度降序排
 	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Tier != results[j].Tier {
-			return results[i].Tier < results[j].Tier
-		}
 		return results[i].Speed > results[j].Speed
 	})
 
@@ -126,10 +120,10 @@ func RunDownload(input PingDelaySet, params DownloadParams) []DownloadResult {
 		results = results[:params.MaxResults]
 	}
 
-	fmt.Printf("\n[Layer 3] Top %d（按 tier → 速度）：\n", len(results))
+	fmt.Printf("\n[Layer 3] Top %d（按速度降序）：\n", len(results))
 	for i, r := range results {
-		fmt.Printf("  #%-2d %-15s  %6.2f MB/s  %s  [Tier %d]\n",
-			i+1, r.IP.String(), r.Speed, r.Colo, r.Tier)
+		fmt.Printf("  #%-2d %-15s  %6.2f MB/s  %s\n",
+			i+1, r.IP.String(), r.Speed, r.Colo)
 	}
 	return results
 }
@@ -229,6 +223,3 @@ func measureDownload(ip *net.IPAddr, params DownloadParams) (float64, string) {
 	mbPerSec := bytesPerSec / (1024.0 * 1024.0)
 	return mbPerSec, colo
 }
-
-// _ = sync.Mutex{} 防止 import 报警（如果以后要加并发的话）
-var _ = sync.Mutex{}

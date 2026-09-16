@@ -11,22 +11,22 @@
 
 ## 架构（一句话）
 
-节点（服务器/路由器）跑 cf-speed-pick 测速 → 把 colo 桶 CSV 上传到 Worker KV → 客户端 `/sub` 读 KV 返回真实优选 IP 的 vless:// 列表。
+节点（服务器/路由器）跑 cf-speed-pick 测速 → 把 Top N CSV 上传到 Worker KV → 客户端 `/sub` 读 KV 返回真实优选 IP 的 vless:// 列表。
 
 ```
 ┌─────────── 节点 ──────────┐         ┌─────────── 边缘 ───────────┐
 │ 服务器/路由器              │         │ VLESS Worker                │
 │ cf-speed-pick 跑完整测速   │  POST   │ /api/put 鉴权 → KV.put      │
-│ → out/colo/*.csv          │ ──────► │ (key=operator/colo)         │
+│ → out/03_top.csv         │ ──────► │ (key=operator/all)         │
 │ speedtest-and-upload.sh   │ bearer  │                             │
 └───────────────────────────┘         │ /sub 读 KV → 返回 vless://    │
                                       └─────────────────────────────┘
                                                  │
                                           ┌──────▼──────┐
                                           │  CF KV      │
-                                          │ unicom/NRT  │
-                                          │ unicom/SIN  │
-                                          │ telecom/NRT │
+                                          │ unicom/all  │
+                                          │ unicom/all  │
+                                          │ telecom/all │
                                           └─────────────┘
 ```
 
@@ -141,6 +141,7 @@ CF 官方段更新公告：<https://www.cloudflare.com/ips/>
 | `unsupported arch` | 服务器用 amd64 binary，路由器用 arm64 binary |
 | `上传失败 401` | env 里的 PUT_TOKEN 不对 — 重新从 CF Dashboard 抄 |
 | `上传失败 400 Bad operator` | env 里 OPERATOR 必须是 `unicom` 或 `telecom` |
+| `上传失败 400 Bad colo` | 现在 KV key 固定 `${operator}/all`，不要传 `?colo=`（已删除） |
 | `测速被代理污染` | 在 ShellCrash / clash 配 CF 段直连（`172.64.0.0/13` 等） |
 | `路由器的 cf-ranges.txt 被清` | 用 U 盘路径，不要放 JFFS |
 

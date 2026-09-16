@@ -62,22 +62,20 @@ echo "$UUID" | npx wrangler secret put VLESS_UUID
 
 ---
 
-## 三、（可选）配 UPSTREAM_CACHE_BASE
+## 三、订阅数据来自 CF KV
 
-只有**当 VPS 上有 cf-speed-pick cache** 时才需要配。
+VPS 上 cf-speed-pick 每 6 小时跑一次，把 Top N CSV 上传到 KV key `${operator}/all`：
 
-编辑 `wrangler.toml`：
-
-```toml
-[vars]
-UPSTREAM_CACHE_BASE = "https://cf-cache.example.com"
+```
+${operator}/all  →  ip,download_speed_MBps,colo,delay_ms,loss_rate,timestamp
+                    162.158.0.1,12.34,SJC,30,...
+                    172.64.1.2,11.89,NRT,45,...
+                    ...
 ```
 
-其中 `cf-cache.example.com` 是 VPS 上 nginx 暴露的域名（参考 `DEPLOY-R7000.md` 的 nginx 配置）。
+Worker `/sub` 直接读这个 KV key（按速度降序截 Top N），拼成 vless:// 返回。
 
-Worker 的 `/sub` 端点会拉 `${UPSTREAM_CACHE_BASE}/cache/colo/{COLO}.csv`。
-
-**先留空也行**：`/sub` 会返回一个静态最小节点列表，能用但不包含优选 IP。
+**没数据时**：`/sub` 退回到 Worker 内置的 `FALLBACK_IPS`（手动维护，约 10 个 IP）。
 
 ---
 
@@ -136,7 +134,8 @@ curl https://cf-speed-proxy.<子域>.workers.dev/health
   "version": "0.1.0",
   "uuid_prefix": "04c808e2",
   "fallback": null,
-  "upstream_cache_base": null
+  "has_kv": true,
+  "fallback_ips_count": 10
 }
 ```
 
@@ -205,7 +204,7 @@ UUID 在两个地方要用：
 
 Worker 本身在 CF 边缘上，客户端连的是 CF IP。但 CF 有几百个边缘 IP，国内访问不同 IP 速度差很多。
 
-**自动**：用 `/sub?colos=NRT,ICN,KIX&top=5` 这种订阅 URL，**前提是 VPS 上有 cf-speed-pick cache 在跑**。Worker 会拉 VPS 的 colo 桶，把 Top IP 拼进订阅。
+**自动**：用 `/sub?operator=telecom&top=10` 这种订阅 URL，**前提是 VPS 上 cf-speed-pick 在跑（每 6 小时 cron 上传 `out/03_top.csv` 到 KV）**。Worker 读 KV 把 Top IP 拼进订阅。
 
 **手动**：用 `cf-speed-pick` 跑一次拿到优选 IP（如 `172.64.229.1`），手动加到客户端 v2rayN 节点配置的"地址"字段。
 
@@ -216,14 +215,14 @@ Worker 本身在 CF 边缘上，客户端连的是 CF IP。但 CF 有几百个�
 ### 选项 1：手贴订阅内容
 ```bash
 # 在 VPS 上
-curl https://cf-speed-proxy.<子域>.workers.dev/sub?colos=NRT,ICN,KIX > nodes.txt
+curl https://cf-speed-proxy.<子域>.workers.dev/sub?operator=telecom&top=10 > nodes.txt
 # 把 nodes.txt 发给客户端，他们复制到 v2rayN
 ```
 
 ### 选项 2：客户端订阅 URL
 在 v2rayN / Shadowrocket 里填：
 ```
-https://cf-speed-proxy.<子域>.workers.dev/sub?colos=NRT,ICN,KIX&top=3
+https://cf-speed-proxy.<子域>.workers.dev/sub?operator=telecom&top=10
 ```
 客户端会定时拉这个 URL，自动更新节点列表。
 
@@ -248,10 +247,11 @@ https://cf-speed-proxy.<子域>.workers.dev/sub?colos=NRT,ICN,KIX&top=3
 - **Worker 出口被目标站屏蔽**：配置 FALLBACK_IP，路径要带 `pyip%3D...`（Worker 代码已经处理）
 
 ### Q: /sub 返回 502？
-检查 `UPSTREAM_CACHE_BASE` 是否能直接访问：
+检查 KV 是否写入了数据：
 ```bash
-curl -I "${UPSTREAM_CACHE_BASE}/cache/colo/NRT.csv"
-# 应该返回 200 + CSV
+# VPS 上看上传日志
+tail -50 speedtest.log
+# 应该看到 "ok: OK: telecom/all (..."
 ```
 
 ### Q: 怎么更新 UUID？

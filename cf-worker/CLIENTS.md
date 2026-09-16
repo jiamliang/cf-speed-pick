@@ -7,7 +7,7 @@
 部署完成后你会拿到：
 - **Worker URL**：`https://cf-speed-proxy.<子域>.workers.dev` 或 `https://proxy.yourdomain.com`
 - **UUID**：配 Secret 时用的那串（如 `a1b2c3d4-e5f6-7890-abcd-ef1234567890`）
-- **优选 IP**：从 `/sub` 端点或 VPS colo 桶拿到的 CF 边缘 IP
+- **优选 IP**：从 `/sub` 端点（CF KV）拿到的 CF 边缘 IP
 
 ---
 
@@ -91,7 +91,7 @@ vless://UUID@IP:443?encryption=none&security=tls&sni=HOST&fp=random&type=ws&host
 Karing 支持订阅格式直接粘贴：
 
 1. 设置 → 订阅 → 添加
-2. 粘贴 `https://cf-speed-proxy.<子域>.workers.dev/sub?colos=NRT,ICN,KIX`
+2. 粘贴 `https://cf-speed-proxy.<子域>.workers.dev/sub?operator=telecom&top=10`
 3. Karing 会定时拉这个 URL 拿最新节点
 
 ---
@@ -117,17 +117,17 @@ Karing 支持订阅格式直接粘贴：
 每个客户端配订阅 URL，而不是单个节点：
 
 ```
-https://cf-speed-proxy.<子域>.workers.dev/sub?colos=NRT,ICN,KIX,HKG&top=3&min_speed=1.0
+https://cf-speed-proxy.<子域>.workers.dev/sub?operator=telecom&top=10&min_speed=1.0
 ```
 
 参数：
-- `colos`：逗号分隔的 colo 列表（按优先级）
-- `top`：每个 colo 取前 N 个 IP
+- `operator`：telecom（电信）/ unicom（联通）/ auto（自动反查 + 合并）
+- `top`：全局取前 N 个 IP（按速度降序）
 - `min_speed`：最低速度（MB/s）
 
 客户端每 N 小时拉一次这个 URL，自动拿到最新优选 IP 列表。
 
-**前提**：VPS 上 cf-speed-pick 在跑（产生 colo 桶）+ Worker 配置了 `UPSTREAM_CACHE_BASE`。
+**前提**：VPS 上 cf-speed-pick 在跑（每 6 小时 cron 上传 `out/03_top.csv` 到 KV key `operator/all`）。
 
 ---
 
@@ -201,4 +201,4 @@ NEW_UUID=$(uuidgen | tr 'A-Z' 'a-z')
 1. **UUID 必须保密**：任何人拿到 UUID + 域名 + 任一 CF 边缘 IP 都能用你的代理
 2. **定期换 UUID**：建议每月一次
 3. **绑自定义域名**：避开 `*.workers.dev` 在国内被墙的问题
-4. **不要在公开仓库提交 wrangler.toml**（如果以后填了 UPSTREAM_CACHE_BASE，会暴露 VPS 域名）
+4. **不要在公开仓库提交 wrangler.toml 的真实配置**（vars 可能泄露你的域名/IP）

@@ -33,20 +33,19 @@
 //   /health  — JSON status (UUID prefix, fallback, KV binding, FALLBACK_IPS count)
 //   /sub     — text/plain subscription (one VLESS URI per line)
 //              Query params:
-//                operator=unicom|telecom|auto|test  (default: unicom)
-//                  unicom — 只读 unicom/* KV
-//                  telecom — 只读 telecom/* KV
+//                operator=unicom|telecom|auto|test  (default: auto)
+//                  unicom — 只读 unicom/all KV
+//                  telecom — 只读 telecom/all KV
 //                  auto — ?auto=1 自动反查 client IP 算出来的 operator
 //                         若是 unicom/telecom → 单读一个
 //                         若是其他（移动/教育网/未知/ip-api 失败）→ 合并 unicom + telecom
-//                colos=NRT,SIN,HKG         (default: NRT,ICN,KIX,TPE,HKG,SIN)
-//                top=5                     (per-colo top N)
+//                top=10                    (global top N)
 //                min_speed=8               (drop slower IPs)
 //                auto=1                    (auto-detect operator from client IP)
 //   /api/put — node -> Worker KV upload endpoint
 //              Method: POST
 //              Headers: Authorization: Bearer <PUT_TOKEN>
-//              Query:   ?operator=unicom|telecom&colo=NRT
+//              Query:   ?operator=unicom|telecom
 //              Body:    raw CSV (cf-speed-pick output, with header)
 //   any path with Upgrade: websocket — VLESS proxy
 
@@ -60,7 +59,7 @@ const VERSION = '0.2.0';
 // Vars (set via wrangler.toml or dashboard)
 // - FALLBACK_IP: optional fallback when direct connect fails (e.g. "1.2.3.4:443")
 // KV binding:
-// - KV: namespace "cf-speed-ips" — key = "{operator}/{colo}", value = CSV string
+// - KV: namespace "cf-speed-ips" — key = "{operator}/all", value = CSV string
 
 // =====================================================================
 // FALLBACK_IPS — 兜底优选 IP（KV 没数据或失效时使用）
@@ -165,15 +164,11 @@ async function handlePut(request, env) {
 
   // Parse query params
   const url = new URL(request.url);
-  const operator = (url.searchParams.get('operator') || '').toLowerCase();
-  const colo = (url.searchParams.get('colo') || '').toUpperCase();
+  const operator = url.searchParams.get('operator') || '';
 
   // Validate
-  if (!/^[a-z0-9-]+$/.test(operator)) {
-    return new Response('Bad operator (must match [a-z0-9-]+)', { status: 400 });
-  }
-  if (!/^[A-Z]{3,4}$/.test(colo)) {
-    return new Response('Bad colo (must be 3-4 uppercase letters)', { status: 400 });
+  if (!['unicom', 'telecom'].includes(operator)) {
+    return new Response('Bad operator (use unicom or telecom)', { status: 400 });
   }
 
   // Read CSV body
@@ -192,7 +187,7 @@ async function handlePut(request, env) {
   }
 
   // KV write with 7-day TTL (cron runs every 6h, so KV always fresh)
-  const key = `${operator}/${colo}`;
+  const key = `${operator}/all`;
   try {
     await env.KV.put(key, csv, { expirationTtl: 7 * 24 * 3600 });
   } catch (e) {
@@ -215,9 +210,7 @@ async function handleSubscription(request, env) {
   //   ?operator=unicom|telecom|auto|test 显式指定
   //   ?auto=1 在 'auto' 基础上反查 client IP（识别为联通/电信则单读，否则合并）
   let operator = (url.searchParams.get('operator') || 'auto').toLowerCase();
-  const colos = (url.searchParams.get('colos') || 'NRT,ICN,KIX,TPE,HKG,SIN')
-    .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  const top = clampInt(url.searchParams.get('top'), 1, 50, 5);
+  const top = clampInt(url.searchParams.get('top'), 1, 50, 10);
   const minSpeed = parseFloat(url.searchParams.get('min_speed') || '0') || 0;
 
   // ?auto=1 + operator=auto → 反查 client IP
@@ -247,21 +240,16 @@ async function handleSubscription(request, env) {
   let ips;
   if (operator === 'auto') {
     const [uni, tel] = await Promise.all([
-      fetchFromKV(env, 'unicom', colos, top, minSpeed),
-      fetchFromKV(env, 'telecom', colos, top, minSpeed),
+      fetchTopFromKV(env, 'unicom', top, minSpeed),
+      fetchTopFromKV(env, 'telecom', top, minSpeed),
     ]);
     // 简单合并：unicom 在前（先返回国内通用的）
     ips = [...uni, ...tel];
   } else {
-    ips = await fetchFromKV(env, operator, colos, top, minSpeed);
+    ips = await fetchTopFromKV(env, operator, top, minSpeed);
   }
 
-  // 2) Fallback to hardcoded FALLBACK_IPS (filtered by colos)
-  if (ips.length === 0) {
-    ips = filterFallback(FALLBACK_IPS, colos, top);
-  }
-
-  // 3) Last resort: FALLBACK_IPS unfiltered
+  // 2) Fallback to hardcoded FALLBACK_IPS
   if (ips.length === 0) {
     ips = FALLBACK_IPS.slice(0, top).map(({ ip, colo, note }) => ({
       ip, speed: 0, colo, note,
@@ -295,45 +283,28 @@ async function handleSubscription(request, env) {
   });
 }
 
-// Fetch all colo CSVs from KV in parallel, parse, return flat IP list.
-async function fetchFromKV(env, operator, colos, top, minSpeed) {
+// Fetch top N IPs from KV ({operator}/all), parse CSV, return sorted by speed (desc).
+async function fetchTopFromKV(env, operator, top, minSpeed) {
   if (!env.KV) return [];
-  const fetches = colos.map(async (colo) => {
-    const key = `${operator}/${colo}`;
-    try {
-      const csv = await env.KV.get(key);
-      if (!csv) return [];
-      const lines = csv.split('\n').slice(1); // skip header
-      const ips = [];
-      for (const line of lines) {
-        const parts = line.split(',');
-        if (parts.length < 4) continue;
-        const ip = parts[0].trim();
-        const speed = parseFloat(parts[1]) || 0;
-        const lineColo = parts[2].trim();
-        if (minSpeed > 0 && speed < minSpeed) continue;
-        ips.push({ ip, speed, colo: lineColo || colo });
-        if (ips.length >= top) break;
-      }
-      return ips;
-    } catch (_) {
-      return [];
+  try {
+    const csv = await env.KV.get(`${operator}/all`);
+    if (!csv) return [];
+    const lines = csv.split('\n').slice(1); // skip header
+    const ips = [];
+    for (const line of lines) {
+      const parts = line.split(',');
+      if (parts.length < 4) continue;
+      const ip = parts[0].trim();
+      const speed = parseFloat(parts[1]) || 0;
+      const colo = parts[2].trim();
+      if (minSpeed > 0 && speed < minSpeed) continue;
+      ips.push({ ip, speed, colo });
+      if (ips.length >= top) break;
     }
-  });
-  const nested = await Promise.all(fetches);
-  return nested.flat();
-}
-
-// Filter FALLBACK_IPS by colos (matched first, then others).
-function filterFallback(fallback, colos, top) {
-  const matched = [];
-  const others = [];
-  for (const item of fallback) {
-    const enriched = { ip: item.ip, speed: 0, colo: item.colo, note: item.note };
-    if (colos.includes(item.colo)) matched.push(enriched);
-    else others.push(enriched);
+    return ips;
+  } catch (_) {
+    return [];
   }
-  return [...matched, ...others].slice(0, top);
 }
 
 // Detect operator from client IP using ip-api.com (free 45 req/day).
