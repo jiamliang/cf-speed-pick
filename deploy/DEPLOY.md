@@ -11,7 +11,7 @@ deploy/
 ├── build.sh                       # 编译两个架构 binary（可选，git clone 后用）
 ├── install.sh                     # 通用安装脚本（detect 架构 + 注册 cron）
 ├── speedtest-and-upload.sh        # 主脚本：测速 + 上传 KV
-├── env.example                    # env 模板（拷成 env 后填）
+├── .env.example                    # env 模板（拷成 .env 后填）
 ├── cf-ranges.txt                  # IP 段配置（可编辑，决定测哪些 CF 段）
 ├── cf-speed-pick-linux-amd64      # 服务器二进制（x86_64）
 └── cf-speed-pick-linux-arm64      # 路由器二进制（aarch64 / armv7l）
@@ -35,8 +35,8 @@ cd /opt/cf-speed-pick
 ./install.sh
 # 提示：operator (telecom/unicom):   ← 输入 unicom 或 telecom
 
-# 4) 编辑 env 填 WORKER_URL + PUT_TOKEN
-vi env
+# 4) 编辑 .env 填 WORKER_URL + PUT_TOKEN
+vi .env
 #   WORKER_URL=https://vless.cf.peeweecap.com
 #   PUT_TOKEN=<从 CF Dashboard 抄来的 32 字节 hex>
 #   OPERATOR=unicom   ← install.sh 已经自动加
@@ -82,8 +82,8 @@ cd /tmp/mnt/usb/cf-speed-pick
 ./install.sh
 # 提示：operator (telecom/unicom):   ← 输入 unicom
 
-# 5) 编辑 env
-vi env
+# 5) 编辑 .env
+vi .env
 
 # 6) 再跑 install.sh
 ./install.sh
@@ -161,7 +161,7 @@ ls -lh deploy/cf-speed-pick-linux-*
 | 问题 | 排查 |
 |---|---|
 | `missing cf-ranges.txt` | `cp cf-ranges.txt /opt/cf-speed-pick/`，或从 deploy/ 包里复制 |
-| `missing env` | `cp env.example env` + 编辑填 WORKER_URL + PUT_TOKEN |
+| `missing .env` | `cp .env.example .env` + 编辑填 WORKER_URL + PUT_TOKEN |
 | `binary not found` | 确认 `cf-speed-pick-linux-amd64` 在 deploy/ 目录，且 `chmod +x` |
 | `unsupported arch` | 服务器用 amd64 binary，路由器用 arm64 binary |
 | `上传失败 401` | env 里的 PUT_TOKEN 不对 — 重新从 CF Dashboard 抄 |

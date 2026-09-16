@@ -42,7 +42,7 @@
 | `build.sh` | 跨编译 amd64 + arm64 两个 binary |
 | `install.sh` | 通用安装脚本：detect 架构 → 写 env → 注册 cron（不复制任何文件） |
 | `speedtest-and-upload.sh` | 主脚本：跑测速 + 上传 KV（合并了原 upload-to-kv.sh） |
-| `env.example` | env 模板（拷成 `env` 后填 WORKER_URL + PUT_TOKEN） |
+| `.env.example` | env 模板（拷成 `.env` 后填 WORKER_URL + PUT_TOKEN） |
 | `cf-ranges.txt` | IP 段配置（强制要求存在，每行 CIDR，支持 # 注释） |
 | `cf-speed-pick-linux-amd64` | 服务器二进制（gitignore） |
 | `cf-speed-pick-linux-arm64` | 路由器二进制（gitignore） |
@@ -60,8 +60,8 @@ scp -r deploy/ root@<server>:/opt/cf-speed-pick/
 # 2. 注册 + 填 env
 ssh root@<server>
 cd /opt/cf-speed-pick
-./install.sh                          # 首次：写 env，提示编辑
-vi env                                # 填 WORKER_URL + PUT_TOKEN
+./install.sh                          # 首次：写 .env，提示编辑
+vi .env                               # 填 WORKER_URL + PUT_TOKEN
 ./install.sh                          # 二次：注册 cron
 
 # 3. 手动验证
@@ -75,7 +75,7 @@ scp -r deploy/ admin@<router>:/tmp/mnt/usb/cf-speed-pick/
 ssh admin@<router>
 cd /tmp/mnt/usb/cf-speed-pick
 ./install.sh                          # 用梅林的 cru 而非 crontab
-vi env
+vi .env
 ./install.sh
 cru l | grep cf-speed-pick            # 验证注册成功
 ```
@@ -101,7 +101,7 @@ CF 官方段更新公告：<https://www.cloudflare.com/ips/>
 
 - **不复制任何文件**：当前目录就是"安装"位置
 - **detect 架构**：`uname -m` → 选对应 binary（仅验证存在）
-- **写 env**：从 env.example 复制（如不存在），chmod 600，自动注入 OPERATOR
+- **写 env**：从 .env.example 复制（如不存在），chmod 600，自动注入 OPERATOR
 - **强制 cf-ranges.txt**：缺失就 hard-error（不再从 .example 兜底，因为文件已随 deploy/ 提供）
 - **注册 cron**：梅林用 `cru`，标准 Linux 用 `crontab -l | ... | crontab -`
 - **绝对路径**：cron 命令用 `SCRIPT_DIR/speedtest-and-upload.sh`，不依赖 PATH
@@ -136,7 +136,7 @@ CF 官方段更新公告：<https://www.cloudflare.com/ips/>
 | 问题 | 排查 |
 |---|---|
 | `missing cf-ranges.txt` | `cp cf-ranges.txt <目标目录>`，或从 deploy/ 包里复制 |
-| `missing env` | `cp env.example env` + 编辑填 WORKER_URL + PUT_TOKEN |
+| `missing .env` | `cp .env.example .env` + 编辑填 WORKER_URL + PUT_TOKEN |
 | `binary not found` | 确认 `cf-speed-pick-linux-amd64` 在当前目录，且 `chmod +x` |
 | `unsupported arch` | 服务器用 amd64 binary，路由器用 arm64 binary |
 | `上传失败 401` | env 里的 PUT_TOKEN 不对 — 重新从 CF Dashboard 抄 |

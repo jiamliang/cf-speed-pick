@@ -9,7 +9,7 @@
 # 行为：
 #   1. detect uname -m → 选对应架构 binary（仅验证存在）
 #   2. 询问或读 --operator 参数（telecom / unicom）
-#   3. 写脚本同目录的 env（如不存在 → 复制 env.example，提示用户填）
+#   3. 写脚本同目录的 .env（如不存在 → 复制 .env.example，提示用户填）
 #   4. 把 OPERATOR 注入 env（如还没设）
 #   5. 写 cf-ranges.txt（如不存在 → 复制 .example）
 #   6. 注册 cron（用绝对路径）：
@@ -106,17 +106,17 @@ case "$OPERATOR" in
 esac
 
 # === 4. env 文件 ===
-ENV_FILE="$SCRIPT_DIR/env"
+ENV_FILE="$SCRIPT_DIR/.env"
 
 if [ ! -f "$ENV_FILE" ]; then
-    if [ ! -f "$SCRIPT_DIR/env.example" ]; then
-        echo "missing $SCRIPT_DIR/env.example — cannot bootstrap env" >&2
+    if [ ! -f "$SCRIPT_DIR/.env.example" ]; then
+        echo "missing $SCRIPT_DIR/.env.example — cannot bootstrap env" >&2
         exit 1
     fi
-    cp "$SCRIPT_DIR/env.example" "$ENV_FILE"
+    cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     echo ""
-    echo "wrote $ENV_FILE from env.example"
+    echo "wrote $ENV_FILE from .env.example"
     echo "please edit it (set WORKER_URL + PUT_TOKEN), then re-run:"
     echo "  $0 --operator $OPERATOR --cron \"$CRON_EXPR\""
     exit 0

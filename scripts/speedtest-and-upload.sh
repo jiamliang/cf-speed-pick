@@ -42,9 +42,9 @@ if [ ! -x "$CFSP_BIN" ]; then
 fi
 
 # === 2. source env ===
-ENV_FILE="$SCRIPT_DIR/env"
+ENV_FILE="$SCRIPT_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
-    echo "missing $ENV_FILE — copy env.example to env and fill in" >&2
+    echo "missing $ENV_FILE — copy .env.example to .env and fill in" >&2
     exit 1
 fi
 . "$ENV_FILE"
