@@ -140,13 +140,11 @@ if ! grep -q "^WORKER_URL=" "$ENV_FILE" || ! grep -q "^PUT_TOKEN=" "$ENV_FILE"; 
 fi
 
 # === 5. cf-ranges.txt ===
+# 必须存在（speedtest-and-upload.sh 强制要求）
 if [ ! -f "$SCRIPT_DIR/cf-ranges.txt" ]; then
-    if [ -f "$SCRIPT_DIR/cf-ranges.txt.example" ]; then
-        cp "$SCRIPT_DIR/cf-ranges.txt.example" "$SCRIPT_DIR/cf-ranges.txt"
-        echo "wrote $SCRIPT_DIR/cf-ranges.txt from .example"
-    else
-        echo "WARNING: no cf-ranges.txt and no .example — speedtest will use built-in ranges" >&2
-    fi
+    echo "missing $SCRIPT_DIR/cf-ranges.txt" >&2
+    echo "copy it from the deploy bundle first (e.g. scp deploy/cf-ranges.txt <host>:/opt/cf-speed-pick/)" >&2
+    exit 1
 fi
 
 # === 6. 注册 cron（绝对路径） ===

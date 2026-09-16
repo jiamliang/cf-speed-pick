@@ -67,20 +67,26 @@ OUT="$SCRIPT_DIR/out"
 LOG="$SCRIPT_DIR/speedtest.log"
 RANGES="$SCRIPT_DIR/cf-ranges.txt"
 
+# 强制要求 cf-ranges.txt 存在（不用内置 fallback）
+if [ ! -f "$RANGES" ]; then
+    echo "missing $RANGES — copy it from the deploy bundle" >&2
+    exit 1
+fi
+
 mkdir -p "$OUT/full" "$(dirname "$LOG")"
 
 TS=$(date +%Y%m%d-%H%M%S)
-echo "[$TS] [$ARCH] 开始 cf-speed-pick (n=$N t=$T dt=$DT dn=$DN)" >> "$LOG"
+echo "[$TS] [$ARCH] 开始 cf-speed-pick (n=$N t=$T dt=$DT dn=$DN) ranges=$RANGES" >> "$LOG"
 
 "$CFSP_BIN" \
     -out "$OUT/full" \
     -debug \
+    -ranges "$RANGES" \
     -n "$N" -t "$T" -max-delay "$MAX_DELAY" \
     -colo-strategy tiered \
     -dt "$DT" -dn "$DN" \
     -colo-priority "NRT,ICN,KIX,FUK,TPE,HKG,SIN,LAX,SJC" \
     -output-colos \
-    ${RANGES:+-ranges "$RANGES"} \
     >> "$LOG" 2>&1
 
 RC=$?
