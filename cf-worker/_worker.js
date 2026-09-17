@@ -47,6 +47,13 @@
 //              Headers: Authorization: Bearer <PUT_TOKEN>
 //              Query:   ?operator=unicom|telecom
 //              Body:    raw CSV (cf-speed-pick output, with header)
+//   /api/get — node -> Worker KV download endpoint (consumed by nginx render script)
+//              Method: GET
+//              Headers: Authorization: Bearer <PUT_TOKEN>
+//              Query:   ?op=unicom|telecom   (operator alias, required)
+//                       &top=N               (1..20, default 2)
+//              Response: text/csv (header + first N data rows)
+//                        X-Source-Rows / X-Returned-Rows headers for debug
 //   any path with Upgrade: websocket — VLESS proxy
 
 import { connect } from 'cloudflare:sockets';
@@ -141,6 +148,10 @@ function handleHttp(request, env) {
     return handlePut(request, env);
   }
 
+  if (path === '/api/get') {
+    return handleApiGet(request, env, url);
+  }
+
   return new Response('Not Found', { status: 404 });
 }
 
@@ -166,9 +177,13 @@ async function handlePut(request, env) {
   const url = new URL(request.url);
   const operator = url.searchParams.get('operator') || '';
 
-  // Validate
+  // Validate (VPS 测速脚本白名单保持不变 — 只有 unicom/telecom 才能写 KV)
+  // /api/get 的读取侧更宽松, 未知线当合并读; 见 handleApiGet
   if (!['unicom', 'telecom'].includes(operator)) {
-    return new Response('Bad operator (use unicom or telecom)', { status: 400 });
+    return new Response(
+      'Bad operator (use unicom or telecom; for reads use /api/get which auto-detects)',
+      { status: 400 },
+    );
   }
 
   // Read CSV body
@@ -198,6 +213,100 @@ async function handlePut(request, env) {
     `OK: ${key} (${csv.length} bytes, ${csv.split('\n').length - 1} rows)\n`,
     { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
   );
+}
+
+// --- /api/get: nodes -> Worker KV raw CSV download ---
+//
+// Returns the original cf-speed-pick CSV (header + first N data rows) stored at
+// {op}/all. Used by nginx-proxy's render-nginx-conf.sh to feed CF optimal IPs
+// into upstream block without re-running cf-speed-pick on the nginx host.
+//
+// op 解析规则（参考 /sub 的逻辑）:
+//   op=unicom|telecom → 直接读 {op}/all
+//   op=mobile|<其他>|空|auto → 当作 'auto' (合并 unicom + telecom 各 top/2)
+//   缺 op               → 用 detectOperator 按 CF-Connecting-IP 自动选;
+//                           能识 telecom/unicom 就单读, 否则合并
+async function handleApiGet(request, env, url) {
+  // Method check
+  if (request.method !== 'GET') {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: { Allow: 'GET' },
+    });
+  }
+
+  // Auth: shared PUT_TOKEN (same as /api/put)
+  const auth = request.headers.get('Authorization') || '';
+  const expected = `Bearer ${env.PUT_TOKEN || ''}`;
+  if (!env.PUT_TOKEN || !auth || auth !== expected) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  // Parse top (default 2, max 20 — 不变)
+  const DEFAULT_TOP = 2;
+  const MAX_TOP = 20;
+  const rawTop = parseInt(url.searchParams.get('top') || '', 10);
+  const top = (!isNaN(rawTop) && rawTop > 0)
+    ? Math.min(rawTop, MAX_TOP)
+    : DEFAULT_TOP;
+
+  // Parse op (default 'auto' → 触发 detectOperator; 显式 unicom/telecom 直读)
+  const rawOp = (url.searchParams.get('op') || '').toLowerCase();
+  let operator;
+  if (['unicom', 'telecom'].includes(rawOp)) {
+    operator = rawOp;
+  } else if (rawOp) {
+    // 显式 op 但不是 unicom/telecom (含 mobile/edu/<乱写>/auto) → 合并
+    operator = 'auto';
+  } else {
+    // 缺 op → 用 detectOperator 自动选
+    const detected = await detectOperator(request, env);
+    operator = ['unicom', 'telecom'].includes(detected) ? detected : 'auto';
+  }
+
+  if (!env.KV) {
+    return new Response('KV namespace not bound', { status: 503 });
+  }
+
+  // 读 KV
+  let ips;
+  if (operator === 'auto') {
+    // 移动/教育网/未知: unicom + telecom 各取 top/2 (向下取整, 至少 1)
+    const half = Math.max(1, Math.floor(top / 2));
+    const [uni, tel] = await Promise.all([
+      fetchTopFromKV(env, 'unicom',  half, 0),
+      fetchTopFromKV(env, 'telecom', half, 0),
+    ]);
+    // unicom 在前（国内通用习惯）
+    ips = [...uni, ...tel];
+  } else {
+    ips = await fetchTopFromKV(env, operator, top, 0);
+  }
+
+  if (ips.length === 0) {
+    return new Response(
+      `not found: ${operator}/all (and FALLBACK_IPS empty)`,
+      { status: 404 },
+    );
+  }
+
+  // 拼成原 CSV 格式 (header + 数据行), 用 fetchTopFromKV 解析出的对象
+  // 重拼保证字段顺序一致
+  const header = 'ip,download_speed_MBps,colo,delay_ms,loss_rate,timestamp';
+  const lines = ips.map(({ ip, speed, colo }) =>
+    `${ip},${speed ? speed.toFixed(2) : '0'},${colo},0,0,`
+  );
+  const outCsv = [header, ...lines].join('\n') + '\n';
+
+  return new Response(outCsv, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Source-Op': operator,
+      'X-Returned-Rows': String(ips.length),
+    },
+  });
 }
 
 // --- /sub: subscription ---
