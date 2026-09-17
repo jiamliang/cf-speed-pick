@@ -46,3 +46,7 @@ zone_name = "peeweecap.com"
 [[routes]]
 pattern = "ecr.cf.peeweecap.com/*"
 zone_name = "peeweecap.com"
+
+[[routes]]
+pattern = "auth.cf.peeweecap.com/*"
+zone_name = "peeweecap.com"
