@@ -15,8 +15,6 @@ const routes = {
   ["ghcr." + CUSTOM_DOMAIN]: "https://ghcr.io",
   ["cloudsmith." + CUSTOM_DOMAIN]: "https://docker.cloudsmith.io",
   ["ecr." + CUSTOM_DOMAIN]: "https://public.ecr.aws",
-  // Docker Hub token endpoint (必须单独路由，否则 docker pull 卡在 auth)
-  ["auth." + CUSTOM_DOMAIN]: "https://auth.docker.io",
 
   // staging
   ["docker-staging." + CUSTOM_DOMAIN]: dockerHub,
